@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genesis-l0"
+version = "0.1.0"
+description = "In-process C99 L0 vector index (SRP-LSH + exact re-rank) with a SQLite mmap system of record for AI agent loops"
+readme = "README.md"
+authors = [{ name = "Maksym Babych / Synapse Core Infrastructure", email = "research@syn.ai" }]
+license = { text = "BUSL-1.1" }
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.20.0"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database :: Database Engines/Servers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+[project.optional-dependencies]
+langgraph = ["langgraph>=0.2", "langgraph-checkpoint-sqlite>=2.0"]
+dev = ["pytest>=7.0.0", "build"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not benchmark'"
+markers = ["benchmark: wall-clock latency checks, run with: pytest -m benchmark"]
+
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+skip = "*-win* pp* *-musllinux_i686 *-manylinux_i686"
+test-extras = ["dev"]
+test-command = "pytest {project}/tests"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
