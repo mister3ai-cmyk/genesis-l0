@@ -15,9 +15,10 @@ if sys.platform == "win32":
     sys.exit("genesis-l0 supports Linux and macOS only (POSIX mlock/pthread). Use WSL on Windows.")
 
 machine = platform.machine().lower()
-# Python's sysconfig CFLAGS carry -fno-strict-overflow (= -fwrapv), which blocks
-# vectorization of srp_dot and doubles query latency (measured 517 -> 281 us).
-cflags = ["-O3", "-std=c99", "-Wall", "-Wextra", "-fPIC", "-fstrict-overflow"]
+# Python's sysconfig CFLAGS carry -fno-strict-overflow (GCC) or -fwrapv (macOS
+# clang), which block vectorization of srp_dot and double query latency
+# (measured 517 -> 281 us). Clang ignores -fstrict-overflow, so -fno-wrapv too.
+cflags = ["-O3", "-std=c99", "-Wall", "-Wextra", "-fPIC", "-fstrict-overflow", "-fno-wrapv"]
 
 if os.environ.get("GENESIS_L0_NATIVE") == "1":
     cflags.append("-march=native")
