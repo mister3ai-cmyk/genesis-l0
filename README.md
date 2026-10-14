@@ -38,6 +38,22 @@ Reproduce with `python benchmarks/bench_e2e.py --data /tmp/genesis_eval`.
 - Memory: 32 bytes of code per vector stay hot in L3; the float32 copy used by
   the re-rank (2 KB per 512-dim vector, ~65 MB for 33k) is read from RAM.
 
+## Modes
+
+`pool` is the only knob between accuracy and latency:
+
+| mode | `pool` | Recall@10 | end-to-end p50 |
+|------|-------:|----------:|---------------:|
+| **Precision** (default) | 512 | 90.6 % | ~380 µs |
+| **Fast** | 128 | 73.9 % | ~228 µs (fits a hard < 250 µs budget) |
+
+Precision is the default: inside an LLM step the ~150 µs difference is noise,
+while a missed context hit is not.
+
+```python
+mem = GenesisL0Memory("agent_memory.db", pool=128)   # fast mode
+```
+
 ## Install
 
 Linux or macOS, Python ≥ 3.9, a C compiler.
@@ -117,11 +133,11 @@ services:
 ```bash
 pytest                                      # functional tests
 pytest -m benchmark -s                      # latency checks (prints p50/p99)
-GENESIS_L0_E2E_BUDGET_US=450 pytest -m benchmark
+GENESIS_L0_E2E_BUDGET_US=300 pytest -m benchmark
 ```
 
-The end-to-end benchmark asserts p50 < 250 µs by default; pool 512 on the VPS
-above measures ~360–400 µs, so set the budget for your hardware.
+The end-to-end benchmark (precision mode) asserts p50 < 450 µs by default;
+override `GENESIS_L0_E2E_BUDGET_US` for your hardware.
 
 ## License
 
