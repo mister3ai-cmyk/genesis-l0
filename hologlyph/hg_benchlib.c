@@ -181,8 +181,8 @@ void hg_bench_prefilter(const HologlyphArena *arena, const float *QT, size_t nq,
     }
 }
 
-/* sizeof + field offsets of HologlyphHeader, for the Python dtype check (13 fields). */
-void hg_header_layout(uint32_t out[14]) {
+/* sizeof + field offsets of HologlyphHeader, for the Python dtype check (14 fields). */
+void hg_header_layout(uint32_t out[15]) {
     out[0]  = (uint32_t)sizeof(HologlyphHeader);
     out[1]  = (uint32_t)offsetof(HologlyphHeader, glyph_id);
     out[2]  = (uint32_t)offsetof(HologlyphHeader, created_ts);
@@ -194,7 +194,8 @@ void hg_header_layout(uint32_t out[14]) {
     out[8]  = (uint32_t)offsetof(HologlyphHeader, source_id);
     out[9]  = (uint32_t)offsetof(HologlyphHeader, key_id);
     out[10] = (uint32_t)offsetof(HologlyphHeader, face_mask);
-    out[11] = (uint32_t)offsetof(HologlyphHeader, reserved0);
-    out[12] = (uint32_t)offsetof(HologlyphHeader, content_hash);
-    out[13] = (uint32_t)offsetof(HologlyphHeader, reserved1);
+    out[11] = (uint32_t)offsetof(HologlyphHeader, node_flags);
+    out[12] = (uint32_t)offsetof(HologlyphHeader, reserved0);
+    out[13] = (uint32_t)offsetof(HologlyphHeader, content_hash);
+    out[14] = (uint32_t)offsetof(HologlyphHeader, reserved1);
 }

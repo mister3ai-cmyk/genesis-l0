@@ -1,6 +1,6 @@
 """
 test_hologlyph.py - hologlyph_l2 hash invariance, prefilter select and exact metric.
-2026-11-21 · 15 tests; run in WSL against the same libhgbench.so as the benchmark:
+2026-11-21 · 19 tests; run in WSL against the same libhgbench.so as the benchmark:
     HG_BENCH_LIB=./libhgbench.so python -m pytest -q -s test_hologlyph.py
 """
 import ctypes
@@ -260,7 +260,7 @@ def test_a2_invariant_gate_is_o4_invariant():
 
 
 def test_header_is_64_bytes_and_matches_python_dtype():
-    lay = np.zeros(14, np.uint32)
+    lay = np.zeros(15, np.uint32)
     LIB.hg_header_layout(hn.ptr(lay))
     assert lay[0] == 64 == hn.HEADER_DTYPE.itemsize
     assert lay[1:].tolist() == [hn.HEADER_DTYPE.fields[f][1] for f in hn.HEADER_DTYPE.names]
@@ -301,8 +301,11 @@ def test_bridge_raw_faces_roundtrip(tmp_path):
                   key_id=i % 7, source_id=3, proj_version=1, content=b"t%d" % i)
     assert np.array_equal(m.faces[:50], F)
     q = F[17, 0] + 0.01 * rng.standard_normal(128).astype(np.float32)
-    top = m.recall_for_llm(q, np.ones(8), top_k=3, exact=True)
+    top = m.recall_for_llm(q, np.ones(8), top_k=3, exact=True, history=True)
     assert top[0]["glyph_id"] == 27
+    # key_id = i % 7: slot 17 (key 3) is superseded by slot 45 -> hidden without history
+    assert 27 not in [t["glyph_id"] for t in m.recall_for_llm(q, np.ones(8), top_k=3, exact=True)]
+    assert m.last_stats["superseded"] == 42 - 6       # keys 1..6 (key 0 = none): all but the newest
     m.flush()
     del m
     m2 = hb.HologlyphMemory(50, path=path, lib_path=lib)
@@ -445,3 +448,110 @@ def test_hgl2_v1_file_rejected_and_migrated(tmp_path):
     assert np.array_equal(m.faces[:n], Y)
     top = m.recall_for_llm(Y[1, 2], np.ones(8), top_k=1, min_trust=0.4, max_anis=0.5, exact=True)
     assert top[0]["glyph_id"] == 12
+
+
+def _search(ar, q, prm, k=10, fast=False, pool=768):
+    w = np.ones(8, np.float32)
+    m, st = (hn._Match * k)(), hn._Stats()
+    if fast:
+        r = LIB.hg_search_fast_filtered(ctypes.byref(ar.struct()), hn.ptr(q), hn.ptr(w), ctypes.byref(prm), None,
+                                        pool, k, m, ctypes.byref(st))
+    else:
+        r = LIB.hg_search_top_k_filtered(ctypes.byref(ar.struct()), hn.ptr(q), hn.ptr(w), ctypes.byref(prm), None,
+                                         k, m, ctypes.byref(st))
+    return [(m[i].glyph_id, m[i].score) for i in range(r)], st
+
+
+def test_supersession_hides_older_nodes_unless_history():
+    rng = np.random.default_rng(41)
+    n = 2000
+    hdr = clean_headers(n)
+    Y = random_subspaces(rng, n)
+    q = hn.aligned((128,), np.float32)
+    q[:] = Y[0, 0]                                     # node 0 is the best match
+    hdr["key_id"][[0, 1, 2]] = 77
+    hdr["created_ts"][[0, 1, 2]] = [100, 300, 200]     # node 1 is the newest of key 77
+    sup = hn.supersede_flags(hdr["key_id"], hdr["created_ts"])
+    assert np.flatnonzero(sup).tolist() == [0, 2]
+    hdr["node_flags"][sup] = hn.HG_NODE_SUPERSEDED
+    ar = hn.Arena(LIB, hdr, as_faces(Y), F, 256)
+    for fast in (False, True):
+        top, st = _search(ar, q, hn._Params(-1e30, 1e30, -1e30, hn.HG_A2_OFF), fast=fast)
+        ids = [g for g, _ in top]
+        assert 1_000_000 not in ids and 1_000_002 not in ids and st.superseded >= 1
+        top, st = _search(ar, q, hn._Params(-1e30, 1e30, -1e30, hn.HG_A2_OFF, hn.HG_SEARCH_HISTORY), fast=fast)
+        assert top[0][0] == 1_000_000 and st.superseded == 0
+
+
+def test_bridge_supersession_incremental_matches_bulk_and_late_facts(tmp_path):
+    import hologlyph_bridge as hb
+    lib = os.environ.get("HOLOGLYPH_LIB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "libhologlyph.so")
+    if not os.path.exists(lib):
+        pytest.skip("libhologlyph.so not built")
+    rng = np.random.default_rng(42)
+    n = 300
+    keys = rng.integers(0, 20, n)
+    ts = rng.integers(1_000, 5_000, n)                 # random order: late (older) facts included
+    F = rng.standard_normal((n, 4, 128)).astype(np.float32)
+    F /= np.linalg.norm(F, axis=-1, keepdims=True)
+    path = str(tmp_path / "m.hgl")
+    m = hb.HologlyphMemory(n, path=path, lib_path=lib, srp_bits=0)
+    for i in range(n):
+        m.inglyph(i, F[i], orthonormalize=False, key_id=int(keys[i]), created_ts=int(ts[i]), face_mask=0x01)
+    got = (m.headers["node_flags"][:n] & hb.HG_NODE_SUPERSEDED) != 0
+    assert np.array_equal(got, hb.supersede_flags(keys, ts))
+    m.flush()
+    del m
+    m2 = hb.HologlyphMemory(n, path=path, lib_path=lib, srp_bits=0)         # writer index rebuilt on open
+    m2_latest = {k: s for k, s in m2._latest.items()}
+    vis = np.flatnonzero((keys != 0) & ~got)
+    assert m2_latest == {int(keys[s]): int(s) for s in vis}
+
+
+def test_decay_zero_is_bit_identical_and_prior_is_additive():
+    rng = np.random.default_rng(43)
+    n = 3000
+    hdr = clean_headers(n)
+    Y = random_subspaces(rng, n)
+    hdr["created_ts"] = rng.integers(1_600_000_000, 1_700_000_000, n)
+    ar0 = hn.Arena(LIB, hdr.copy(), as_faces(Y), F, 256)
+    hdr["decay_lambda"] = np.float32(np.log(2) / (30 * 86400))               # half-life 30 days
+    ar1 = hn.Arena(LIB, hdr, as_faces(Y), F, 256)
+    q = hn.aligned((128,), np.float32)
+    now = 1_700_000_000
+    for _ in range(10):
+        q[:] = rng.standard_normal(128)
+        for fast in (False, True):
+            base, _ = _search(ar0, q, hn._Params(-1e30, 1e30, -1e30, 1, 0, now, 0.5), fast=fast)   # lambda = 0
+            b2, _ = _search(ar1, q, hn._Params(-1e30, 1e30, -1e30, 1, 0, now, 0.0), fast=fast)     # beta = 0
+            ref, _ = _search(ar0, q, hn._Params(-1e30, 1e30, -1e30, 1), fast=fast)
+            assert base == ref == b2                                                               # exact equality
+        top, _ = _search(ar1, q, hn._Params(-1e30, 1e30, -1e30, 1, 0, now, 0.01), k=32)
+        Q = q.astype(np.float64)
+        s = ((Y @ Q) ** 2).sum(1) - 0.01 * float(hdr["decay_lambda"][0]) * (now - hdr["created_ts"].astype(np.float64))
+        ref_ids = (1_000_000 + np.argsort(-s)[:32]).tolist()
+        assert len(set(g for g, _ in top) & set(ref_ids)) >= 31                                # fp32 ties at the edge
+
+
+def test_search_is_pure_and_identical_on_1_and_4_threads():
+    rng = np.random.default_rng(44)
+    n = 20000
+    hdr = clean_headers(n)
+    hdr["created_ts"] = rng.integers(1_600_000_000, 1_700_000_000, n)
+    hdr["decay_lambda"] = 1e-7
+    hdr["key_id"] = rng.integers(0, 500, n)
+    hdr["node_flags"][hn.supersede_flags(hdr["key_id"], hdr["created_ts"])] = hn.HG_NODE_SUPERSEDED
+    ar = hn.Arena(LIB, hdr, as_faces(random_subspaces(rng, n)), F, 256)
+    snap_h, snap_f = hdr.tobytes(), ar.faces.tobytes()
+    q = hn.aligned((128,), np.float32)
+    prm = hn._Params(-1e30, 1e30, -1e30, 1, 0, 1_700_000_000, 0.3)
+    for _ in range(10):
+        q[:] = rng.standard_normal(128)
+        LIB.hg_set_threads(1)
+        a1, _ = _search(ar, q, prm, fast=True)
+        a1b, _ = _search(ar, q, prm, fast=True)
+        LIB.hg_set_threads(4)
+        a4, _ = _search(ar, q, prm, fast=True)
+        assert a1 == a1b == a4
+    LIB.hg_set_threads(1)
+    assert hdr.tobytes() == snap_h and ar.faces.tobytes() == snap_f      # search writes nothing

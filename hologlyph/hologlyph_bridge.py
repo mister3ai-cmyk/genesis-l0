@@ -26,6 +26,7 @@ HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY, HG_HASH_SUBSPACE_ENERGY_UNIT, 
 HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT = 0, 1, 2   # hg_a2_mode (hologlyph.h)
 HG_SCORE_AUTO, HG_SCORE_B5, HG_SCORE_B4 = 0, 1, 2   # hg_score_mode
 FACE_F0, FACE_F1, FACE_F2, FACE_F3, FACE_ALL = 0x1, 0x2, 0x4, 0x8, 0xF
+HG_NODE_SUPERSEDED, HG_SEARCH_HISTORY = 0x1, 0x1
 
 
 def planes_for(mode: int, bits: int) -> int:
@@ -42,9 +43,11 @@ _MAGIC = b"HGL2v2\0\0"                        # v2: 64 B header, trust_q16 / key
 
 HEADER_DTYPE = np.dtype({                     # = HologlyphHeader (hologlyph.h), 64 B
     "names":   ["glyph_id", "created_ts", "trust_q16", "proj_version", "anis_score", "anis_flags",
-                "decay_lambda", "source_id", "key_id", "face_mask", "reserved0", "content_hash", "reserved1"],
-    "formats": ["<u8", "<u4", "<u2", "<u2", "<f4", "<u4", "<f4", "<u4", "<u4", "u1", ("u1", 3), ("u1", 16), ("u1", 8)],
-    "offsets": [0, 8, 12, 14, 16, 20, 24, 28, 32, 36, 37, 40, 56],
+                "decay_lambda", "source_id", "key_id", "face_mask", "node_flags", "reserved0", "content_hash",
+                "reserved1"],
+    "formats": ["<u8", "<u4", "<u2", "<u2", "<f4", "<u4", "<f4", "<u4", "<u4", "u1", "u1", ("u1", 2), ("u1", 16),
+                ("u1", 8)],
+    "offsets": [0, 8, 12, 14, 16, 20, 24, 28, 32, 36, 37, 38, 40, 56],
     "itemsize": _HDR_BYTES,
 })
 assert HEADER_DTYPE.itemsize == 64
@@ -61,6 +64,19 @@ def neutral_headers(h, glyph_ids) -> None:
     h["glyph_id"] = glyph_ids
     h["trust_q16"] = 65535
     h["face_mask"] = FACE_ALL
+
+
+def supersede_flags(key_id, created_ts) -> np.ndarray:
+    """Offline (bulk) form of the writer rule: within every key_id != 0 only the newest node
+    (max created_ts, ties -> highest slot) stays visible; returns bool[n] 'superseded'."""
+    key_id, ts = np.asarray(key_id, np.int64), np.asarray(created_ts, np.int64)
+    out = np.zeros(len(key_id), bool)
+    idx = np.flatnonzero(key_id != 0)
+    if idx.size:
+        order = idx[np.lexsort((idx, ts[idx], key_id[idx]))]       # by key, then ts, then slot
+        last = np.r_[key_id[order][1:] != key_id[order][:-1], True]
+        out[order[~last]] = True
+    return out
 
 
 def face_mask_eff(m):
@@ -80,7 +96,8 @@ class _Arena(ctypes.Structure):
 
 class _Params(ctypes.Structure):
     _fields_ = [("min_trust", ctypes.c_float), ("max_anis", ctypes.c_float),
-                ("theta_gate", ctypes.c_float), ("a2_mode", ctypes.c_uint32)]
+                ("theta_gate", ctypes.c_float), ("a2_mode", ctypes.c_uint32),
+                ("search_flags", ctypes.c_uint32), ("now_ts", ctypes.c_uint32), ("decay_beta", ctypes.c_float)]
 
 
 class _Match(ctypes.Structure):
@@ -90,7 +107,7 @@ class _Match(ctypes.Structure):
 
 class _Stats(ctypes.Structure):
     _fields_ = [("scanned", ctypes.c_uint64), ("gated_header", ctypes.c_uint64),
-                ("gated_octant", ctypes.c_uint64)]
+                ("gated_octant", ctypes.c_uint64), ("superseded", ctypes.c_uint64)]
 
 
 def _load(lib_path: Optional[str]) -> ctypes.CDLL:
@@ -195,14 +212,24 @@ class HologlyphMemory:
         self._scratch = _aligned_empty(capacity)
         self._mask_counts = _aligned_empty(64).view(np.uint32)       # [16], arena-level homogeneity of face_mask
         self._mask_counts[:] = 0
+        self._latest: Dict[int, int] = {}                             # key_id -> visible slot (writer index)
         if len(self):
             self._mask_counts[:] = np.bincount(face_mask_eff(self.headers["face_mask"][:len(self)]), minlength=16)
+            self._rebuild_latest()
         if srp_bits:
             self.lib.hg_srp_make_planes(_f32p(self._planes), n_planes, 7)
             if hash_mode == HG_HASH_SUBSPACE_ENERGY_UNIT:
                 self.lib.hg_srp_normalize_planes(_f32p(self._planes), n_planes)
             if len(self):
                 self.lib.hg_srp_encode(ctypes.byref(self._arena()), 0, len(self))
+
+    def _rebuild_latest(self) -> None:
+        n = len(self)
+        k, ts = self.headers["key_id"][:n].astype(np.int64), self.headers["created_ts"][:n].astype(np.int64)
+        for slot in np.flatnonzero(k != 0):
+            cur = self._latest.get(int(k[slot]))
+            if cur is None or (ts[slot], slot) > (ts[cur], cur):
+                self._latest[int(k[slot])] = int(slot)
 
     def __len__(self) -> int:
         return int(self._meta[1])
@@ -241,10 +268,19 @@ class HologlyphMemory:
         h["created_ts"] = int(time.time()) if created_ts is None else int(created_ts)
         h["trust_q16"], h["proj_version"] = trust_q16(trust), proj_version
         h["anis_score"], h["anis_flags"], h["decay_lambda"] = anis, anis_flags, decay_lambda
-        h["source_id"], h["key_id"], h["face_mask"], h["reserved0"] = source_id, key_id, face_mask, 0
+        h["source_id"], h["key_id"], h["face_mask"], h["node_flags"], h["reserved0"] = source_id, key_id, face_mask, 0, 0
         digest = hashlib.sha256(faces.tobytes() if content is None else content).digest()
         h["content_hash"] = np.frombuffer(digest[:16], dtype=np.uint8)
         h["reserved1"] = 0
+        if key_id:                                   # supersession: only the newest node of a key stays visible
+            cur = self._latest.get(int(key_id))
+            ts = int(h["created_ts"])
+            if cur is None or (ts, slot) > (int(self.headers[cur]["created_ts"]), cur):
+                if cur is not None:
+                    self.headers[cur]["node_flags"] |= HG_NODE_SUPERSEDED
+                self._latest[int(key_id)] = slot
+            else:                                    # an older fact arrived late
+                h["node_flags"] |= HG_NODE_SUPERSEDED
         arena = self._arena()
         self.lib.hg_mask_count_insert(ctypes.byref(arena), slot)
         if self.srp_bits:
@@ -267,10 +303,12 @@ class HologlyphMemory:
 
     def recall_for_llm(self, query_128, octant_weights_8, top_k: int = 5,
                        min_trust: float = 0.5, max_anis: float = 0.2,
-                       exact: bool = False) -> List[Dict]:
+                       exact: bool = False, history: bool = False, now_ts: Optional[int] = None,
+                       decay_beta: float = 0.0) -> List[Dict]:
         """Gated Grassmann top-k. Default: hash prefilter (self.pool nodes) + exact
         re-rank; exact=True (or srp_bits=0) scans every node. Weights are clipped at 0
-        and normalised to sum 1."""
+        and normalised to sum 1. history=True also returns superseded nodes; decay_beta > 0
+        adds the time prior -beta * lambda * (now_ts - created_ts) (now_ts default: now)."""
         q = np.ascontiguousarray(query_128, dtype=np.float32)
         w = np.clip(np.asarray(octant_weights_8, dtype=np.float32), 0.0, None)
         if q.shape != (HG_DIM,) or w.shape != (HG_OCTANTS,):
@@ -281,7 +319,9 @@ class HologlyphMemory:
         k = max(1, min(int(top_k), HG_MAX_K))
 
         out, stats = (_Match * k)(), _Stats()
-        arena, params = self._arena(), _Params(min_trust, max_anis, self.theta_gate, self.a2_mode)
+        arena = self._arena()
+        params = _Params(min_trust, max_anis, self.theta_gate, self.a2_mode, HG_SEARCH_HISTORY if history else 0,
+                         int(time.time()) if now_ts is None else int(now_ts), decay_beta)
         if exact or not self.srp_bits:
             n = self.lib.hg_search_top_k(ctypes.byref(arena), _f32p(q), _f32p(w), ctypes.byref(params),
                                          k, out, ctypes.byref(stats))
@@ -289,7 +329,7 @@ class HologlyphMemory:
             n = self.lib.hg_search_fast(ctypes.byref(arena), _f32p(q), _f32p(w), ctypes.byref(params),
                                         self.pool, k, out, ctypes.byref(stats))
         self.last_stats = {"scanned": stats.scanned, "gated_header": stats.gated_header,
-                           "gated_octant": stats.gated_octant}
+                           "gated_octant": stats.gated_octant, "superseded": stats.superseded}
         return [{"glyph_id": out[i].glyph_id, "score": out[i].score,
                  "chordal_dist": out[i].chordal_dist, "dominant_face": out[i].dominant_face}
                 for i in range(n)]

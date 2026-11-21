@@ -43,7 +43,8 @@ extern "C" {
  *   28    4    source_id      ingest channel / source
  *   32    4    key_id         fact slot for supersession; 0 = none (neutral)
  *   36    1    face_mask      bit f = face F_f present (F0 = 0x01); 0 reads as 0x0F (legacy)
- *   37    3    reserved0
+ *   37    1    node_flags     HG_NODE_* (writer side: HG_NODE_SUPERSEDED)
+ *   38    2    reserved0
  *   40   16    content_hash   first 16 B of sha256 of the content
  *   56    8    reserved1
  * Neutral defaults: trust_q16 = 65535, anis 0, decay_lambda 0, key_id 0, face_mask 0x0F.
@@ -59,7 +60,8 @@ typedef struct __attribute__((aligned(64))) {
     uint32_t source_id;
     uint32_t key_id;
     uint8_t  face_mask;
-    uint8_t  reserved0[3];
+    uint8_t  node_flags;
+    uint8_t  reserved0[2];
     uint8_t  content_hash[16];
     uint8_t  reserved1[8];
 } HologlyphHeader;
@@ -70,8 +72,12 @@ _Static_assert(offsetof(HologlyphHeader, created_ts) == 8 && offsetof(HologlyphH
                offsetof(HologlyphHeader, proj_version) == 14 && offsetof(HologlyphHeader, anis_score) == 16 &&
                offsetof(HologlyphHeader, anis_flags) == 20 && offsetof(HologlyphHeader, decay_lambda) == 24 &&
                offsetof(HologlyphHeader, source_id) == 28 && offsetof(HologlyphHeader, key_id) == 32 &&
-               offsetof(HologlyphHeader, face_mask) == 36 && offsetof(HologlyphHeader, content_hash) == 40 && offsetof(HologlyphHeader, reserved1) == 56,
+               offsetof(HologlyphHeader, face_mask) == 36 && offsetof(HologlyphHeader, node_flags) == 37 && offsetof(HologlyphHeader, content_hash) == 40 && offsetof(HologlyphHeader, reserved1) == 56,
                "HologlyphHeader layout");
+
+/* node_flags. SUPERSEDED: a newer node with the same key_id exists (set by the writer
+   when it inserts that newer node); hidden unless the query asks for history. */
+#define HG_NODE_SUPERSEDED 0x01u
 
 #define HG_FACE_MASK_ALL 0x0Fu
 /* Faces a node really has: absent faces are never scored and never hashed. */
@@ -166,7 +172,14 @@ typedef struct {
     float max_anis;    /* gate A1: anis_score   > max_anis       -> drop */
     float theta_gate;  /* gate A2: tau_trust - tau_anis < theta  -> drop */
     uint32_t a2_mode;  /* hg_a2_mode; 0 = legacy face-0 gate (default for old callers) */
+    uint32_t search_flags; /* HG_SEARCH_*; 0 = superseded nodes hidden */
+    uint32_t now_ts;       /* query time, epoch s (decay only) */
+    float    decay_beta;   /* additive time prior: S' = S + beta * log w, w = exp(-lambda * dt),
+                              i.e. S' = S - beta * decay_lambda * max(0, now_ts - created_ts);
+                              beta == 0 or lambda == 0 -> S' == S exactly */
 } HologlyphParams;
+
+#define HG_SEARCH_HISTORY 0x1u     /* also return superseded nodes ("what was X in 2023?") */
 
 /*
  * Gate A2 mode (HologlyphParams.a2_mode). Blocks 3 and 6 are octants
@@ -190,6 +203,7 @@ typedef struct {
     uint64_t scanned;       /* nodes looked at */
     uint64_t gated_header;  /* dropped by A1 (no face reads) */
     uint64_t gated_octant;  /* dropped by A2 (2 cache lines read) */
+    uint64_t superseded;    /* hidden as superseded (header only, no face reads) */
 } HologlyphStats;
 
 /*

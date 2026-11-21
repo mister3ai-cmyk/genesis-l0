@@ -12,7 +12,8 @@ import os
 import numpy as np
 
 from hologlyph_bridge import (HEADER_DTYPE, trust_q16, neutral_headers, face_mask_eff, FACE_ALL,
-                              HG_SCORE_AUTO, HG_SCORE_B5, HG_SCORE_B4, HG_DIM, HG_FACES, HG_MAX_K, HG_OCTANTS, _Arena, _Match,
+                              HG_SCORE_AUTO, HG_SCORE_B5, HG_SCORE_B4, HG_NODE_SUPERSEDED, HG_SEARCH_HISTORY,
+                              supersede_flags, HG_DIM, HG_FACES, HG_MAX_K, HG_OCTANTS, _Arena, _Match,
                               _Params, _Stats, _aligned_empty, code_words, planes_for,
                               HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY,
                               HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2,

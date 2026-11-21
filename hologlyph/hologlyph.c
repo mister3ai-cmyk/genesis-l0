@@ -166,12 +166,13 @@ static size_t heap_emit(TopK *h, const HologlyphArena *arena, float qn2, int b4,
 
 /* -------------------------------------------------------------- scoring */
 
-/* 0 = dropped by A1, 1 = dropped by A2, 2 = scored. */
+/* 0 = dropped by A1, 1 = dropped by A2, 2 = scored, 3 = superseded (hidden). */
 static inline int score_node(const HologlyphArena *arena, size_t i,
                              const float *restrict qt, const float *restrict q,
                              const HologlyphParams *p, int b4, float *score, uint8_t *dom) {
     const HologlyphHeader *h = &arena->headers[i];
     if (h->anis_score > p->max_anis || (float)h->trust_q16 * (1.0f / 65535.0f) < p->min_trust) return 0;
+    if ((h->node_flags & HG_NODE_SUPERSEDED) && !(p->search_flags & HG_SEARCH_HISTORY)) return 3;
 
     const float *y = arena->faces_tensor + i * HG_NODE_FLOATS;
     if (p->a2_mode == HG_A2_FACE0) {
@@ -209,6 +210,10 @@ static inline int score_node(const HologlyphArena *arena, size_t i,
         }
         *score = s;
     }
+    if (p->decay_beta != 0.0f && h->decay_lambda != 0.0f) {          /* log w_time = -lambda * dt */
+        float dt = p->now_ts > h->created_ts ? (float)(p->now_ts - h->created_ts) : 0.0f;
+        *score -= p->decay_beta * h->decay_lambda * dt;
+    }
     *dom = d;
     return 2;
 }
@@ -243,7 +248,7 @@ size_t hg_search_top_k_filtered(const HologlyphArena *arena, const float *q,
     heap.cnt = 0;
     heap.k = k;
     int b4 = hg_scorer_is_b4(arena);
-    uint64_t g_hdr = 0, g_oct = 0;
+    uint64_t g_hdr = 0, g_oct = 0, g_sup = 0;
     size_t n = arena->n;
 
     for (size_t i = 0; i < n; i++) {
@@ -252,6 +257,7 @@ size_t hg_search_top_k_filtered(const HologlyphArena *arena, const float *q,
         int r = score_node(arena, i, qt, q, params, b4, &s, &d);
         if (r == 0) { g_hdr++; continue; }
         if (r == 1) { g_oct++; continue; }
+        if (r == 3) { g_sup++; continue; }
         heap_push(&heap, s, (uint32_t)i, d);
     }
 
@@ -259,6 +265,7 @@ size_t hg_search_top_k_filtered(const HologlyphArena *arena, const float *q,
         stats->scanned      += n;
         stats->gated_header += g_hdr;
         stats->gated_octant += g_oct;
+        stats->superseded   += g_sup;
     }
     return heap_emit(&heap, arena, qn2, b4, out);
 }
@@ -271,7 +278,7 @@ static size_t rerank_core(const HologlyphArena *arena, const float *q,
     TopK heap = {0};                                     /* init only to quiet -Wmaybe-uninitialized */
     heap.cnt = 0;
     heap.k = k;
-    uint64_t scanned = 0, g_hdr = 0, g_oct = 0;
+    uint64_t scanned = 0, g_hdr = 0, g_oct = 0, g_sup = 0;
     int b4 = hg_scorer_is_b4(arena);
 
     for (size_t c = 0; c < n_cand; c++) {
@@ -289,6 +296,7 @@ static size_t rerank_core(const HologlyphArena *arena, const float *q,
         int r = score_node(arena, slot, qt, q, params, b4, &s, &d);
         if (r == 0) { g_hdr++; continue; }
         if (r == 1) { g_oct++; continue; }
+        if (r == 3) { g_sup++; continue; }
         heap_push(&heap, s, slot, d);
     }
 
@@ -296,6 +304,7 @@ static size_t rerank_core(const HologlyphArena *arena, const float *q,
         stats->scanned      += scanned;
         stats->gated_header += g_hdr;
         stats->gated_octant += g_oct;
+        stats->superseded   += g_sup;
     }
     return heap_emit(&heap, arena, qn2, b4, out);
 }
