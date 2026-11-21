@@ -1,0 +1,14 @@
+{
+ "version": 1,
+ "d_in": 384,
+ "d_out": 128,
+ "fit_rows": 40000,
+ "created": "2026-11-21",
+ "files": {
+  "center.npy": "75ba415a38888fdd1b45561fd7e8e9714214aea2a9981abd8824ff00c98ffc93",
+  "pca.npy": "f83dcb3e27981762a642cd2b227af2073d22b4b6c37b4c98efc669953b9c51b5"
+ },
+ "model": "BAAI/bge-small-en-v1.5",
+ "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+ "fit_on": "dev LongMemEval_S (seed 0 split), 20000 turns x {F0, F3}"
+}

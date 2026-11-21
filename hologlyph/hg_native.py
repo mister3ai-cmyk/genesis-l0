@@ -1,6 +1,6 @@
 """
 hg_native.py - ctypes binding of libhgbench.so (hologlyph.c + hg_benchlib.c) for
-test_hologlyph.py and bench_vs_hnsw.py. 2026-11-21 · 1 class (Arena), 4 helpers; 16 bound C functions.
+test_hologlyph.py and bench_vs_hnsw.py. 2026-11-21 · 1 class (Arena), 4 helpers; 17 bound C functions.
 
 One build serves the test and the benchmark:
     gcc -O3 -march=native -ffast-math -fopenmp -shared -fPIC hologlyph.c hg_benchlib.c \
@@ -11,7 +11,7 @@ import os
 
 import numpy as np
 
-from hologlyph_bridge import (HEADER_DTYPE, HG_DIM, HG_FACES, HG_MAX_K, HG_OCTANTS, _Arena, _Match,
+from hologlyph_bridge import (HEADER_DTYPE, trust_q16, neutral_headers, HG_DIM, HG_FACES, HG_MAX_K, HG_OCTANTS, _Arena, _Match,
                               _Params, _Stats, _aligned_empty, code_words, planes_for,
                               HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY,
                               HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2,
@@ -33,6 +33,7 @@ def load(path=None):
     A, Pp = ctypes.POINTER(_Arena), ctypes.POINTER(_Params)
     sig = {
         "hg_gen_random": ([_P, _P, _SZ, _P, _P, _P, _SZ], None),
+        "hg_header_layout": ([_P], None),
         "hg_set_threads": ([ctypes.c_int], None),
         "hg_max_threads": ([], ctypes.c_int),
         "hg_bench_latency": ([A, _P, _P, _SZ, Pp, ctypes.c_int, _SZ, _SZ, _P, _SZ, _P, _P, _P], None),

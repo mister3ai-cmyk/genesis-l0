@@ -1,6 +1,6 @@
 /*
  * hg_benchlib.c — native timing harness for bench_vs_hnsw.py (not part of the core).
- * 2026-11-21 · 6 functions: dataset generator identical to bench_hologlyph.c,
+ * 2026-11-21 · 7 functions: dataset generator identical to bench_hologlyph.c,
  * per-query latency (clock_gettime inside C, no Python in the timed region),
  * batch QPS with one single-threaded query per thread, prefilter-only latency.
  *
@@ -48,15 +48,18 @@ void hg_gen_random(HologlyphHeader *headers, float *faces, size_t n,
         HologlyphHeader *h = &headers[i];
         memset(h, 0, sizeof(*h));
         h->glyph_id  = 1000000ULL + i;
-        h->timestamp = 1700000000ULL + i;
+        h->created_ts = 1700000000u + (uint32_t)i;
         int toxic = urand() < 0.15;
         h->anis_score   = toxic ? 0.8f + 0.2f * urand() + 1e-4f : 0.2f * urand();
-        h->trust_scalar = toxic ? 0.3f + 0.7f * urand()        : 0.6f + 0.4f * urand();
-        for (int b = 0; b < 32; b++) h->content_hash[b] = (uint8_t)xorshift64s();
+        h->trust_q16  = hg_trust_q16(toxic ? 0.3f + 0.7f * urand() : 0.6f + 0.4f * urand());
+        for (int b = 0; b < 32; b++) {                  /* 32 draws keep the RNG stream unchanged */
+            uint8_t v = (uint8_t)xorshift64s();
+            if (b < 16) h->content_hash[b] = v;
+        }
     }
     for (size_t qi = 0; qi < nq; qi++) {
         size_t t;
-        do { t = xorshift64s() % n; } while (headers[t].anis_score > 0.2f || headers[t].trust_scalar < 0.5f);
+        do { t = xorshift64s() % n; } while (headers[t].anis_score > 0.2f || headers[t].trust_q16 * (1.0f / 65535.0f) < 0.5f);
         planted_slot[qi] = (uint32_t)t;
         const float *y = faces + t * HG_NODE_FLOATS;
         float *q = Q + qi * HG_DIM, c[HG_FACES], noise[HG_DIM];
@@ -175,4 +178,21 @@ void hg_bench_prefilter(const HologlyphArena *arena, const float *QT, size_t nq,
         lat_us[qi] = now_us() - a;
         ncand[qi] = (uint32_t)c;
     }
+}
+
+/* sizeof + field offsets of HologlyphHeader, for the Python dtype check (12 fields). */
+void hg_header_layout(uint32_t out[13]) {
+    out[0]  = (uint32_t)sizeof(HologlyphHeader);
+    out[1]  = (uint32_t)offsetof(HologlyphHeader, glyph_id);
+    out[2]  = (uint32_t)offsetof(HologlyphHeader, created_ts);
+    out[3]  = (uint32_t)offsetof(HologlyphHeader, trust_q16);
+    out[4]  = (uint32_t)offsetof(HologlyphHeader, proj_version);
+    out[5]  = (uint32_t)offsetof(HologlyphHeader, anis_score);
+    out[6]  = (uint32_t)offsetof(HologlyphHeader, anis_flags);
+    out[7]  = (uint32_t)offsetof(HologlyphHeader, decay_lambda);
+    out[8]  = (uint32_t)offsetof(HologlyphHeader, source_id);
+    out[9]  = (uint32_t)offsetof(HologlyphHeader, key_id);
+    out[10] = (uint32_t)offsetof(HologlyphHeader, reserved0);
+    out[11] = (uint32_t)offsetof(HologlyphHeader, content_hash);
+    out[12] = (uint32_t)offsetof(HologlyphHeader, reserved1);
 }

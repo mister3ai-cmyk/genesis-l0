@@ -95,7 +95,7 @@ static size_t naive_top_k(const HologlyphArena *A, const float *q, const float *
     size_t cnt = 0;
     for (size_t i = 0; i < A->n; i++) {
         const HologlyphHeader *h = &A->headers[i];
-        if (h->anis_score > PARAMS.max_anis || h->trust_scalar < PARAMS.min_trust) continue;
+        if (h->anis_score > PARAMS.max_anis || h->trust_q16 * (1.0f / 65535.0f) < PARAMS.min_trust) continue;
         const float *y = A->faces_tensor + i * HG_NODE_FLOATS;
         float tt = dot_scalar(q + 48, y + 48, 16), ta = dot_scalar(q + 96, y + 96, 16);
         if (tt - ta < PARAMS.theta_gate) continue;
@@ -148,12 +148,15 @@ int main(void) {
         HologlyphHeader *h = &A.headers[i];
         memset(h, 0, sizeof(*h));
         h->glyph_id  = 1000000ULL + i;
-        h->timestamp = 1700000000ULL + i;
+        h->created_ts = 1700000000u + (uint32_t)i;
         int toxic = urand() < TOXIC_FRAC;
         n_toxic += (size_t)toxic;
         h->anis_score   = toxic ? 0.8f + 0.2f * urand() + 1e-4f : 0.2f * urand();
-        h->trust_scalar = toxic ? 0.3f + 0.7f * urand()        : 0.6f + 0.4f * urand();
-        for (int b = 0; b < 32; b++) h->content_hash[b] = (uint8_t)xorshift64s();
+        h->trust_q16  = hg_trust_q16(toxic ? 0.3f + 0.7f * urand() : 0.6f + 0.4f * urand());
+        for (int b = 0; b < 32; b++) {                  /* 32 draws keep the RNG stream unchanged */
+            uint8_t v = (uint8_t)xorshift64s();
+            if (b < 16) h->content_hash[b] = v;
+        }
     }
     printf("fill + MGS: %.2f s, toxic %.2f %%\n", (now_us() - t0) / 1e6, 100.0 * n_toxic / N);
 
@@ -185,7 +188,7 @@ int main(void) {
     for (int qi = 0; qi < N_QUERIES; qi++) {
         size_t t;
         do { t = xorshift64s() % N; } while (A.headers[t].anis_score > PARAMS.max_anis ||
-                                             A.headers[t].trust_scalar < PARAMS.min_trust);
+                                             A.headers[t].trust_q16 * (1.0f / 65535.0f) < PARAMS.min_trust);
         planted[qi] = A.headers[t].glyph_id;
         const float *y = A.faces_tensor + t * HG_NODE_FLOATS;
         float *q = Q + (size_t)qi * HG_DIM, c[HG_FACES], noise[HG_DIM];

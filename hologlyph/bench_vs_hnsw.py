@@ -123,7 +123,7 @@ def clustered_dataset(n, nq, angle, n_clusters=1000, seed=21):
     hdr = hn.aligned((n,), hn.HEADER_DTYPE)
     hdr[:] = 0
     hdr["glyph_id"] = 1_000_000 + np.arange(n)
-    hdr["trust_scalar"] = 1.0
+    hdr["trust_q16"] = 65535
     planted = rng.integers(0, n, nq).astype(np.uint32)
     Q, W = planted_queries(faces, planted, rng)
     ang = rms_angle_deg(centers[cluster[:5000]], faces[:5000].astype(np.float64))

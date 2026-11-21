@@ -1,9 +1,10 @@
 """
 test_hologlyph.py - hologlyph_l2 hash invariance, prefilter select and exact metric.
-2026-11-21 · 8 tests; run in WSL against the same libhgbench.so as the benchmark:
+2026-11-21 · 11 tests; run in WSL against the same libhgbench.so as the benchmark:
     HG_BENCH_LIB=./libhgbench.so python -m pytest -q -s test_hologlyph.py
 """
 import ctypes
+import hashlib
 import os
 import sys
 
@@ -40,7 +41,7 @@ def clean_headers(n):
     h = hn.aligned((n,), hn.HEADER_DTYPE)
     h[:] = 0
     h["glyph_id"] = 1_000_000 + np.arange(n)
-    h["trust_scalar"] = 1.0
+    h["trust_q16"] = 65535
     return h
 
 
@@ -256,3 +257,55 @@ def test_a2_invariant_gate_is_o4_invariant():
           % ((c1 != c2).sum(), n, (f1 != f2).sum(), n))
     assert (f1 != f2).mean() > 0.05                    # legacy gate is not invariant
     assert _a2_decisions(hn.Arena(LIB, hdr, as_faces(Y)), q, hn.HG_A2_OFF, 1e30).sum() == 0
+
+
+def test_header_is_64_bytes_and_matches_python_dtype():
+    lay = np.zeros(13, np.uint32)
+    LIB.hg_header_layout(hn.ptr(lay))
+    assert lay[0] == 64 == hn.HEADER_DTYPE.itemsize
+    assert lay[1:].tolist() == [hn.HEADER_DTYPE.fields[f][1] for f in hn.HEADER_DTYPE.names]
+
+
+def test_a1_trust_q16_gate():
+    """A1 on the quantised trust: q16 / 65535 < min_trust drops the node, faces untouched."""
+    n = 64
+    rng = np.random.default_rng(3)
+    hdr = clean_headers(n)
+    trust = np.linspace(0, 1, n)
+    hdr["trust_q16"] = [hn.trust_q16(t) for t in trust]
+    ar = hn.Arena(LIB, hdr, as_faces(random_subspaces(rng, n)))
+    q = hn.aligned((128,), np.float32)
+    q[:] = rng.standard_normal(128)
+    st, m = hn._Stats(), (hn._Match * 32)()
+    LIB.hg_search_top_k_filtered(ctypes.byref(ar.struct()), hn.ptr(q), hn.ptr(np.ones(8, np.float32)),
+                                 ctypes.byref(hn._Params(0.5, 1e30, -1e30, hn.HG_A2_OFF)), None, 32, m,
+                                 ctypes.byref(st))
+    assert st.gated_header == int((hdr["trust_q16"] / 65535.0 < 0.5).sum()) == n // 2
+    assert hn.trust_q16(1.0) == 65535 and hn.trust_q16(-1) == 0 and hn.trust_q16(0.5) == 32768
+
+
+def test_bridge_raw_faces_roundtrip(tmp_path):
+    """Real-embedding mode: faces stored as given (no MGS), A2 off, header fields persisted (memmap v2)."""
+    import hologlyph_bridge as hb
+    lib = os.environ.get("HOLOGLYPH_LIB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "libhologlyph.so")
+    if not os.path.exists(lib):
+        pytest.skip("libhologlyph.so not built")
+    rng = np.random.default_rng(4)
+    F = rng.standard_normal((50, 4, 128)).astype(np.float32)
+    F /= np.linalg.norm(F, axis=-1, keepdims=True)
+    path = str(tmp_path / "m.hgl")
+    m = hb.HologlyphMemory(50, path=path, lib_path=lib)
+    assert m.a2_mode == hb.HG_A2_OFF
+    for i in range(50):
+        m.inglyph(10 + i, F[i], trust=0.9, orthonormalize=False, created_ts=1_700_000_000 + i,
+                  key_id=i % 7, source_id=3, proj_version=1, content=b"t%d" % i)
+    assert np.array_equal(m.faces[:50], F)
+    q = F[17, 0] + 0.01 * rng.standard_normal(128).astype(np.float32)
+    top = m.recall_for_llm(q, np.ones(8), top_k=3, exact=True)
+    assert top[0]["glyph_id"] == 27
+    m.flush()
+    del m
+    m2 = hb.HologlyphMemory(50, path=path, lib_path=lib)
+    h = m2.headers[17]
+    assert len(m2) == 50 and h["key_id"] == 3 and h["created_ts"] == 1_700_000_017 and h["proj_version"] == 1
+    assert h["trust_q16"] == hb.trust_q16(0.9) and bytes(h["content_hash"]) == hashlib.sha256(b"t17").digest()[:16]

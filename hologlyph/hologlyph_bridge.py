@@ -1,6 +1,6 @@
 """
 hologlyph_bridge.py - ctypes/numpy bridge to libhologlyph.so (hologlyph_l2).
-2026-11-21 · 1 class (HologlyphMemory), 2 public methods; default search = hash prefilter + Grassmann re-rank.
+2026-11-21 · 1 class (HologlyphMemory), 2 public methods, 2 header helpers; default search = hash prefilter + Grassmann re-rank.
 
 Memory is owned by Python (numpy, or np.memmap when `path` is given) and
 passed to C by pointer; the C side never allocates.
@@ -37,12 +37,26 @@ _FACE_BYTES = HG_FACES * HG_DIM * 4
 _PREFIX = 64                                 # memmap file: magic, n, capacity
 _MAGIC = b"HGL2v1\0\0"
 
-HEADER_DTYPE = np.dtype({
-    "names":   ["glyph_id", "timestamp", "trust_scalar", "anis_score", "flags", "content_hash"],
-    "formats": ["<u8", "<u8", "<f4", "<f4", "<u4", ("u1", 32)],
-    "offsets": [0, 8, 16, 20, 24, 28],
+HEADER_DTYPE = np.dtype({                     # = HologlyphHeader (hologlyph.h), 64 B
+    "names":   ["glyph_id", "created_ts", "trust_q16", "proj_version", "anis_score", "anis_flags",
+                "decay_lambda", "source_id", "key_id", "reserved0", "content_hash", "reserved1"],
+    "formats": ["<u8", "<u4", "<u2", "<u2", "<f4", "<u4", "<f4", "<u4", "<u4", "<u4", ("u1", 16), ("u1", 8)],
+    "offsets": [0, 8, 12, 14, 16, 20, 24, 28, 32, 36, 40, 56],
     "itemsize": _HDR_BYTES,
 })
+assert HEADER_DTYPE.itemsize == 64
+
+
+def trust_q16(t: float) -> int:
+    """trust in [0, 1] -> u16 (= hg_trust_q16 in hologlyph.h)."""
+    return 0 if not t > 0 else 65535 if t >= 1 else int(t * 65535.0 + 0.5)
+
+
+def neutral_headers(h, glyph_ids) -> None:
+    """Fill a header array with neutral values (trust 1, no decay, no key, no ANIS)."""
+    h[:] = 0
+    h["glyph_id"] = glyph_ids
+    h["trust_q16"] = 65535
 
 
 class _Arena(ctypes.Structure):
@@ -170,8 +184,14 @@ class HologlyphMemory:
                       self._planes.ctypes.data, self._codes.ctypes.data, self._scratch.ctypes.data,
                       self.srp_bits, self.hash_mode)
 
-    def inglyph(self, glyph_id: int, faces_4x128, trust: float = 1.0, anis: float = 0.0) -> int:
-        """Orthonormalise 4 faces (MGS) into the next slot; returns the slot index."""
+    def inglyph(self, glyph_id: int, faces_4x128, trust: float = 1.0, anis: float = 0.0, *,
+                orthonormalize: bool = True, created_ts: Optional[int] = None, key_id: int = 0,
+                source_id: int = 0, proj_version: int = 0, decay_lambda: float = 0.0,
+                anis_flags: int = 0, content: Optional[bytes] = None) -> int:
+        """Write 4 faces into the next slot; returns the slot index.
+        orthonormalize=True: MGS (synthetic octant mode); False: faces stored as given
+        (real embeddings, already L2-normalised, scorer B5). content: bytes hashed into
+        content_hash (default: the faces)."""
         faces = np.asarray(faces_4x128, dtype=np.float32)
         if faces.shape != (HG_FACES, HG_DIM):
             raise ValueError(f"faces shape {faces.shape} != (4, 128)")
@@ -180,12 +200,17 @@ class HologlyphMemory:
             raise OverflowError(f"hologlyph capacity {self.capacity} exceeded")
 
         self.faces[slot] = faces
-        if self.lib.hg_orthonormalize_faces(_f32p(self.faces[slot])) != 0:
+        if orthonormalize and self.lib.hg_orthonormalize_faces(_f32p(self.faces[slot])) != 0:
             raise ValueError("faces are linearly dependent (rank < 4)")
         h = self.headers[slot]
-        h["glyph_id"], h["timestamp"] = glyph_id, time.time_ns()
-        h["trust_scalar"], h["anis_score"], h["flags"] = trust, anis, 0
-        h["content_hash"] = np.frombuffer(hashlib.sha256(faces.tobytes()).digest(), dtype=np.uint8)
+        h["glyph_id"] = glyph_id
+        h["created_ts"] = int(time.time()) if created_ts is None else int(created_ts)
+        h["trust_q16"], h["proj_version"] = trust_q16(trust), proj_version
+        h["anis_score"], h["anis_flags"], h["decay_lambda"] = anis, anis_flags, decay_lambda
+        h["source_id"], h["key_id"], h["reserved0"] = source_id, key_id, 0
+        digest = hashlib.sha256(faces.tobytes() if content is None else content).digest()
+        h["content_hash"] = np.frombuffer(digest[:16], dtype=np.uint8)
+        h["reserved1"] = 0
         if self.srp_bits:
             self.lib.hg_srp_encode(ctypes.byref(self._arena()), slot, slot + 1)
         self._meta[1] = slot + 1

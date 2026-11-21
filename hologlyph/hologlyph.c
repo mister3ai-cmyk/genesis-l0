@@ -169,7 +169,7 @@ static inline int score_node(const HologlyphArena *arena, size_t i,
                              const float *restrict qt, const float *restrict q,
                              const HologlyphParams *p, float *score, uint8_t *dom) {
     const HologlyphHeader *h = &arena->headers[i];
-    if (h->anis_score > p->max_anis || h->trust_scalar < p->min_trust) return 0;
+    if (h->anis_score > p->max_anis || (float)h->trust_q16 * (1.0f / 65535.0f) < p->min_trust) return 0;
 
     const float *y = arena->faces_tensor + i * HG_NODE_FLOATS;
     if (p->a2_mode == HG_A2_FACE0) {

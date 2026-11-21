@@ -30,17 +30,54 @@ extern "C" {
 #define HG_OCT_TRUST  3
 #define HG_OCT_ANIS   6
 
-/* 64 B, one cache line. */
+/*
+ * 64 B, one cache line; the only per-node data gate A1 reads.
+ *   off  size  field
+ *    0    8    glyph_id
+ *    8    4    created_ts     epoch seconds (u32, valid to 2106)
+ *   12    2    trust_q16      trust in [0, 1] as round(t * 65535); A1 compares t = q16 / 65535
+ *   14    2    proj_version   version of the frozen centre + projection the faces were made with
+ *   16    4    anis_score     ANIS threat score (f32)
+ *   20    4    anis_flags     ANIS flag bits (HG_ANIS_*)
+ *   24    4    decay_lambda   time decay rate, 1/s; 0 = no decay (neutral)
+ *   28    4    source_id      ingest channel / source
+ *   32    4    key_id         fact slot for supersession; 0 = none (neutral)
+ *   36    4    reserved0
+ *   40   16    content_hash   first 16 B of sha256 of the content
+ *   56    8    reserved1
+ * Neutral defaults: trust_q16 = 65535, anis 0, decay_lambda 0, key_id 0.
+ */
 typedef struct __attribute__((aligned(64))) {
     uint64_t glyph_id;
-    uint64_t timestamp;
-    float    trust_scalar;
+    uint32_t created_ts;
+    uint16_t trust_q16;
+    uint16_t proj_version;
     float    anis_score;
-    uint32_t flags;
-    uint8_t  content_hash[32];
+    uint32_t anis_flags;
+    float    decay_lambda;
+    uint32_t source_id;
+    uint32_t key_id;
+    uint32_t reserved0;
+    uint8_t  content_hash[16];
+    uint8_t  reserved1[8];
 } HologlyphHeader;
 
 _Static_assert(sizeof(HologlyphHeader) == 64, "HologlyphHeader must be 64 bytes");
+_Static_assert(_Alignof(HologlyphHeader) == 64, "HologlyphHeader must be 64-byte aligned");
+_Static_assert(offsetof(HologlyphHeader, created_ts) == 8 && offsetof(HologlyphHeader, trust_q16) == 12 &&
+               offsetof(HologlyphHeader, proj_version) == 14 && offsetof(HologlyphHeader, anis_score) == 16 &&
+               offsetof(HologlyphHeader, anis_flags) == 20 && offsetof(HologlyphHeader, decay_lambda) == 24 &&
+               offsetof(HologlyphHeader, source_id) == 28 && offsetof(HologlyphHeader, key_id) == 32 &&
+               offsetof(HologlyphHeader, content_hash) == 40 && offsetof(HologlyphHeader, reserved1) == 56,
+               "HologlyphHeader layout");
+
+#define HG_TRUST_Q16_ONE 65535u
+/* trust in [0, 1] -> q16 (clamped, rounded). */
+static inline uint16_t hg_trust_q16(float t) {
+    if (!(t > 0.0f)) return 0;
+    if (t >= 1.0f) return (uint16_t)HG_TRUST_Q16_ONE;
+    return (uint16_t)(t * 65535.0f + 0.5f);
+}
 
 #define HG_SRP_MAX_BITS 256
 #define HG_MAX_POOL     4096       /* largest candidate pool (stack buffer, 16 KB) */
@@ -103,7 +140,7 @@ typedef struct {
 } HologlyphArena;
 
 typedef struct {
-    float min_trust;   /* gate A1: trust_scalar < min_trust      -> drop */
+    float min_trust;   /* gate A1: trust_q16 / 65535 < min_trust -> drop */
     float max_anis;    /* gate A1: anis_score   > max_anis       -> drop */
     float theta_gate;  /* gate A2: tau_trust - tau_anis < theta  -> drop */
     uint32_t a2_mode;  /* hg_a2_mode; 0 = legacy face-0 gate (default for old callers) */
