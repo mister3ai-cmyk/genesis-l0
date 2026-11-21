@@ -122,6 +122,28 @@ class _Stats(ctypes.Structure):
                 ("gated_octant", ctypes.c_uint64), ("superseded", ctypes.c_uint64)]
 
 
+class Access(ctypes.Structure):              # = HologlyphAccess, 16 B
+    _fields_ = [("glyph_id", ctypes.c_uint64), ("slot", ctypes.c_uint32), ("ts", ctypes.c_uint32)]
+
+
+class AccessLog(ctypes.Structure):           # = HologlyphAccessLog, 192 B, 3 cache lines (place 64-aligned)
+    _fields_ = [("head", ctypes.c_uint64), ("dropped", ctypes.c_uint64), ("pad0", ctypes.c_uint8 * 48),
+                ("tail", ctypes.c_uint64), ("pad1", ctypes.c_uint8 * 56),
+                ("entries", ctypes.c_void_p), ("cap", ctypes.c_uint32), ("pad2", ctypes.c_uint8 * 52)]
+
+
+class ConsolidateParams(ctypes.Structure):
+    _fields_ = [("alpha", ctypes.c_float), ("kappa_min", ctypes.c_float),
+                ("min_trust", ctypes.c_float), ("max_anis", ctypes.c_float)]
+
+
+class ConsolidateStats(ctypes.Structure):
+    _fields_ = [(f, ctypes.c_uint64) for f in ("read", "stale", "duplicate", "skipped_anis", "strengthened")]
+
+
+assert ctypes.sizeof(AccessLog) == 192 and ctypes.sizeof(Access) == 16 and ctypes.sizeof(_Match) == 24
+
+
 def _load(lib_path: Optional[str]) -> ctypes.CDLL:
     path = lib_path or os.environ.get("HOLOGLYPH_LIB") or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "libhologlyph.so")
@@ -154,6 +176,16 @@ def _load(lib_path: Optional[str]) -> ctypes.CDLL:
     lib.hg_node_set_trust.argtypes = [ctypes.POINTER(_Arena), ctypes.c_size_t, ctypes.c_uint16, ctypes.c_uint32,
                                       ctypes.c_float, u32p, ctypes.c_size_t]
     lib.hg_node_set_trust.restype = ctypes.c_long
+    vp = ctypes.c_void_p
+    lib.hg_access_log_init.argtypes, lib.hg_access_log_init.restype = [vp, vp, ctypes.c_uint32], ctypes.c_int
+    lib.hg_access_record.argtypes = [vp, ctypes.POINTER(_Match), ctypes.c_size_t, ctypes.c_uint32]
+    lib.hg_access_record.restype = ctypes.c_size_t
+    lib.hg_consolidate.argtypes = [ctypes.POINTER(_Arena), vp, ctypes.c_size_t, ctypes.POINTER(ConsolidateParams),
+                                   vp, ctypes.POINTER(ConsolidateStats)]
+    lib.hg_consolidate.restype = ctypes.c_size_t
+    lib.hg_weight_query.argtypes, lib.hg_weight_query.restype = [f32p, f32p, f32p], ctypes.c_float
+    lib.hg_prefilter_candidates.argtypes = [ctypes.POINTER(_Arena), f32p, vp, ctypes.c_size_t, u32p]
+    lib.hg_prefilter_candidates.restype = ctypes.c_size_t
     return lib
 
 
@@ -246,10 +278,11 @@ class HologlyphMemory:
     def __len__(self) -> int:
         return int(self._meta[1])
 
-    def _arena(self, n: Optional[int] = None) -> _Arena:
+    def _arena(self, n: Optional[int] = None, score_mode: Optional[int] = None) -> _Arena:
         return _Arena(self.headers.ctypes.data, self.faces.ctypes.data, len(self) if n is None else n, self.capacity,
                       self._planes.ctypes.data, self._codes.ctypes.data, self._scratch.ctypes.data,
-                      self.srp_bits, self.hash_mode, self._mask_counts.ctypes.data, self.score_mode)
+                      self.srp_bits, self.hash_mode, self._mask_counts.ctypes.data,
+                      self.score_mode if score_mode is None else score_mode)
 
     def _slots_of(self, key_id: int):
         s = np.ascontiguousarray(self._key_slots.get(int(key_id), []), dtype=np.uint32)
@@ -337,11 +370,13 @@ class HologlyphMemory:
     def recall_for_llm(self, query_128, octant_weights_8, top_k: int = 5,
                        min_trust: float = 0.5, max_anis: float = 0.2,
                        exact: bool = False, history: bool = False, now_ts: Optional[int] = None,
-                       decay_beta: float = 0.0) -> List[Dict]:
+                       decay_beta: float = 0.0, score_mode: Optional[int] = None) -> List[Dict]:
         """Gated Grassmann top-k. Default: hash prefilter (self.pool nodes) + exact
         re-rank; exact=True (or srp_bits=0) scans every node. Weights are clipped at 0
         and normalised to sum 1. history=True also returns superseded nodes; decay_beta > 0
-        adds the time prior -beta * lambda * (now_ts - created_ts) (now_ts default: now)."""
+        adds the time prior -beta * lambda * (now_ts - created_ts) (now_ts default: now).
+        score_mode: HG_SCORE_* for this query only (None = the memory's). Results carry 'slot'
+        (for the access log); self.last_matches keeps the raw C matches of the last call."""
         q = np.ascontiguousarray(query_128, dtype=np.float32)
         w = np.clip(np.asarray(octant_weights_8, dtype=np.float32), 0.0, None)
         if q.shape != (HG_DIM,) or w.shape != (HG_OCTANTS,):
@@ -352,7 +387,9 @@ class HologlyphMemory:
         k = max(1, min(int(top_k), HG_MAX_K))
 
         out, stats = (_Match * k)(), _Stats()
-        arena = self._arena()
+        if score_mode not in (None, HG_SCORE_AUTO, HG_SCORE_B5, HG_SCORE_B4):
+            raise ValueError("score_mode must be one of HG_SCORE_*")
+        arena = self._arena(score_mode=score_mode)
         params = _Params(min_trust, max_anis, self.theta_gate, self.a2_mode, HG_SEARCH_HISTORY if history else 0,
                          int(time.time()) if now_ts is None else int(now_ts), decay_beta)
         if exact or not self.srp_bits:
@@ -363,7 +400,8 @@ class HologlyphMemory:
                                         self.pool, k, out, ctypes.byref(stats))
         self.last_stats = {"scanned": stats.scanned, "gated_header": stats.gated_header,
                            "gated_octant": stats.gated_octant, "superseded": stats.superseded}
-        return [{"glyph_id": out[i].glyph_id, "score": out[i].score,
+        self.last_matches = out
+        return [{"glyph_id": out[i].glyph_id, "score": out[i].score, "slot": out[i].slot,
                  "chordal_dist": out[i].chordal_dist, "dominant_face": out[i].dominant_face}
                 for i in range(n)]
 

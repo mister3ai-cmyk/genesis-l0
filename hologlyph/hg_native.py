@@ -1,7 +1,7 @@
 """
 hg_native.py - ctypes binding of libhgbench.so (hologlyph.c + hg_benchlib.c) for
-test_hologlyph.py, bench_vs_hnsw.py and bench_anis_temporal.py. 2026-11-21 · 1 class (Arena), 4 helpers,
-4 ctypes structs (access log, consolidation); 26 bound C functions.
+test_hologlyph.py, bench_vs_hnsw.py and bench_anis_temporal.py. 2026-11-21 · 2 classes (Arena, Log), 5 helpers;
+26 bound C functions (access-log structs come from hologlyph_bridge).
 
 One build serves the test and the benchmark:
     gcc -O3 -march=native -ffast-math -fopenmp -shared -fPIC hologlyph.c hg_benchlib.c \
@@ -18,7 +18,8 @@ from hologlyph_bridge import (HEADER_DTYPE, trust_q16, neutral_headers, face_mas
                               _Params, _Stats, _aligned_empty, code_words, planes_for,
                               HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY,
                               HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2,
-                              HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT, HG_ANIS_QUARANTINE)
+                              HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT, HG_ANIS_QUARANTINE,
+                              Access, AccessLog, ConsolidateParams, ConsolidateStats)
 
 MODE_NAMES = {HG_HASH_FACEWISE_FOLDED: "FACEWISE_FOLDED", HG_HASH_SUBSPACE_ENERGY: "SUBSPACE_ENERGY",
               HG_HASH_SUBSPACE_ENERGY_UNIT: "SUBSPACE_ENERGY_UNIT", HG_HASH_SUBSPACE_CHI2: "SUBSPACE_CHI2"}
@@ -29,26 +30,6 @@ _P = ctypes.c_void_p
 _SZ = ctypes.c_size_t
 
 
-class Access(ctypes.Structure):              # = HologlyphAccess, 16 B
-    _fields_ = [("glyph_id", ctypes.c_uint64), ("slot", ctypes.c_uint32), ("ts", ctypes.c_uint32)]
-
-
-class AccessLog(ctypes.Structure):           # = HologlyphAccessLog, 192 B, 3 cache lines (use aligned_log())
-    _fields_ = [("head", ctypes.c_uint64), ("dropped", ctypes.c_uint64), ("pad0", ctypes.c_uint8 * 48),
-                ("tail", ctypes.c_uint64), ("pad1", ctypes.c_uint8 * 56),
-                ("entries", ctypes.c_void_p), ("cap", ctypes.c_uint32), ("pad2", ctypes.c_uint8 * 52)]
-
-
-class ConsolidateParams(ctypes.Structure):
-    _fields_ = [("alpha", ctypes.c_float), ("kappa_min", ctypes.c_float),
-                ("min_trust", ctypes.c_float), ("max_anis", ctypes.c_float)]
-
-
-class ConsolidateStats(ctypes.Structure):
-    _fields_ = [(f, ctypes.c_uint64) for f in ("read", "stale", "duplicate", "skipped_anis", "strengthened")]
-
-
-assert ctypes.sizeof(AccessLog) == 192 and ctypes.sizeof(Access) == 16 and ctypes.sizeof(_Match) == 24
 
 
 def load(path=None):

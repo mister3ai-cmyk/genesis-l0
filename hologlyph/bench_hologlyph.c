@@ -38,7 +38,7 @@
 #endif
 #define L0_TOPK     64
 
-static const HologlyphParams PARAMS = { 0.5f, 0.2f, -0.05f };
+static const HologlyphParams PARAMS = { 0.5f, 0.2f, -0.05f, HG_A2_FACE0, 0, 0, 0.0f };  /* legacy A2 gate, as before */
 
 /* ------------------------------------------------------------- helpers */
 
@@ -232,7 +232,7 @@ int main(void) {
     double   *lat = xalloc((size_t)N_QUERIES * sizeof(double));
     uint64_t *top1 = xalloc((size_t)N_QUERIES * TOP_K * sizeof(uint64_t));
     size_t   *top1_n = xalloc((size_t)N_QUERIES * sizeof(size_t));
-    HologlyphStats st = {0, 0, 0};
+    HologlyphStats st = {0, 0, 0, 0};
     HologlyphMatch m[TOP_K];
 
     for (int qi = 0; qi < N_WARMUP; qi++)
@@ -316,7 +316,7 @@ int main(void) {
 
         for (int pi = 0; pi < 4; pi++) {
             size_t pool = pool_v[pi];
-            HologlyphStats st3 = {0, 0, 0};
+            HologlyphStats st3 = {0, 0, 0, 0};
             double recall = 0.0;
             int hit3 = 0;
             for (int qi = 0; qi < N_WARMUP; qi++)
@@ -361,7 +361,7 @@ int main(void) {
     printf("l0 index of %d faces built in %.2f s\n", rows, (now_us() - t0) / 1e6);
 
     for (int signs = 1; signs <= 2; signs++) {
-        HologlyphStats st2 = {0, 0, 0};
+        HologlyphStats st2 = {0, 0, 0, 0};
         double recall = 0.0;
         int hit2 = 0;
         for (int qi = -N_WARMUP; qi < N_QUERIES; qi++) {
