@@ -23,6 +23,7 @@ import numpy as np
 HG_DIM, HG_OCTANTS, HG_FACES, HG_MAX_K = 128, 8, 4, 32
 # hg_hash_mode (hologlyph.h)
 HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY, HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2 = 0, 1, 2, 3
+HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT = 0, 1, 2   # hg_a2_mode (hologlyph.h)
 
 
 def planes_for(mode: int, bits: int) -> int:
@@ -54,7 +55,7 @@ class _Arena(ctypes.Structure):
 
 class _Params(ctypes.Structure):
     _fields_ = [("min_trust", ctypes.c_float), ("max_anis", ctypes.c_float),
-                ("theta_gate", ctypes.c_float)]
+                ("theta_gate", ctypes.c_float), ("a2_mode", ctypes.c_uint32)]
 
 
 class _Match(ctypes.Structure):
@@ -106,9 +107,12 @@ class HologlyphMemory:
 
     def __init__(self, capacity: int, path: Optional[str] = None,
                  theta_gate: float = -1e30, srp_bits: int = 256, pool: int = 768,
-                 lib_path: Optional[str] = None, hash_mode: int = HG_HASH_FACEWISE_FOLDED):
+                 lib_path: Optional[str] = None, hash_mode: int = HG_HASH_FACEWISE_FOLDED,
+                 a2_mode: int = HG_A2_OFF):
         """srp_bits 256 / 128 enables the hash prefilter (0 = always full scan);
-        pool = unique candidate nodes re-ranked exactly (max 4096); hash_mode = HG_HASH_*."""
+        pool = unique candidate nodes re-ranked exactly (max 4096); hash_mode = HG_HASH_*.
+        a2_mode = HG_A2_* (default OFF: on real PCA embeddings octants 3/6 carry no trust/threat
+        meaning - dev LongMemEval: theta 0 drops 48 % of nodes at random, -13 pp R@5)."""
         if capacity <= 0:
             raise ValueError("capacity must be positive")
         if srp_bits not in (0, 128, 256):
@@ -118,7 +122,9 @@ class HologlyphMemory:
         self.hash_mode = hash_mode
         self.lib = _load(lib_path)
         self.capacity = capacity
-        self.theta_gate = theta_gate        # gate A2 off by default; set e.g. -0.05 to enable
+        if a2_mode not in (HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT):
+            raise ValueError("a2_mode must be one of HG_A2_*")
+        self.theta_gate, self.a2_mode = theta_gate, a2_mode   # A2 only for synthetic-octant data
         self.srp_bits, self.pool = srp_bits, max(1, min(int(pool), 4096))
         self.last_stats: Dict[str, int] = {}
 
@@ -201,7 +207,7 @@ class HologlyphMemory:
         k = max(1, min(int(top_k), HG_MAX_K))
 
         out, stats = (_Match * k)(), _Stats()
-        arena, params = self._arena(), _Params(min_trust, max_anis, self.theta_gate)
+        arena, params = self._arena(), _Params(min_trust, max_anis, self.theta_gate, self.a2_mode)
         if exact or not self.srp_bits:
             n = self.lib.hg_search_top_k(ctypes.byref(arena), _f32p(q), _f32p(w), ctypes.byref(params),
                                          k, out, ctypes.byref(stats))

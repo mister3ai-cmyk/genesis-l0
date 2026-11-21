@@ -1,6 +1,6 @@
 /*
  * hologlyph.h — hologlyph_l2: Grassmann-manifold memory core over genesis-l0.
- * 2026-11-21 · public API: 15 functions, 5 structs, 1 enum (prefilter hash mode).
+ * 2026-11-21 · public API: 15 functions, 5 structs, 2 enums (prefilter hash mode, gate A2 mode).
  *
  * A node is a 4-dim orthonormal subspace Y in R^128 (G(4, R^128)), stored as
  * 4 faces x 128 float32 (2048 B). R^128 = 8 octants x 16 dims:
@@ -106,7 +106,19 @@ typedef struct {
     float min_trust;   /* gate A1: trust_scalar < min_trust      -> drop */
     float max_anis;    /* gate A1: anis_score   > max_anis       -> drop */
     float theta_gate;  /* gate A2: tau_trust - tau_anis < theta  -> drop */
+    uint32_t a2_mode;  /* hg_a2_mode; 0 = legacy face-0 gate (default for old callers) */
 } HologlyphParams;
+
+/*
+ * Gate A2 mode (HologlyphParams.a2_mode). Blocks 3 and 6 are octants
+ * HG_OCT_TRUST / HG_OCT_ANIS of the raw (unweighted) query q.
+ * HG_A2_FACE0 (0): tau_x = <q_x, Y_0,x>, face 0 only; not invariant to Y -> RY.
+ * HG_A2_OFF (1): no A2; default for real (PCA) embeddings, whose blocks carry
+ *   no trust/threat semantics - trust and threats live in the header (A1).
+ * HG_A2_INVARIANT (2): tau_x = sum_f <q_x, Y_f,x>^2 = |Y_x q_x|^2, invariant to
+ *   R in O(4); synthetic-octant mode only, threshold not calibrated.
+ */
+typedef enum { HG_A2_FACE0 = 0, HG_A2_OFF = 1, HG_A2_INVARIANT = 2 } hg_a2_mode;
 
 typedef struct {
     uint64_t glyph_id;

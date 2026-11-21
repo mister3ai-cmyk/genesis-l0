@@ -1,6 +1,6 @@
 """
 hg_native.py - ctypes binding of libhgbench.so (hologlyph.c + hg_benchlib.c) for
-test_hologlyph.py and bench_vs_hnsw.py. 2026-11-21 · 1 class (Arena), 4 helpers.
+test_hologlyph.py and bench_vs_hnsw.py. 2026-11-21 · 1 class (Arena), 4 helpers; 16 bound C functions.
 
 One build serves the test and the benchmark:
     gcc -O3 -march=native -ffast-math -fopenmp -shared -fPIC hologlyph.c hg_benchlib.c \
@@ -14,7 +14,8 @@ import numpy as np
 from hologlyph_bridge import (HEADER_DTYPE, HG_DIM, HG_FACES, HG_MAX_K, HG_OCTANTS, _Arena, _Match,
                               _Params, _Stats, _aligned_empty, code_words, planes_for,
                               HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY,
-                              HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2)
+                              HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2,
+                              HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT)
 
 MODE_NAMES = {HG_HASH_FACEWISE_FOLDED: "FACEWISE_FOLDED", HG_HASH_SUBSPACE_ENERGY: "SUBSPACE_ENERGY",
               HG_HASH_SUBSPACE_ENERGY_UNIT: "SUBSPACE_ENERGY_UNIT", HG_HASH_SUBSPACE_CHI2: "SUBSPACE_CHI2"}
@@ -45,6 +46,7 @@ def load(path=None):
         "hg_weight_query": ([_P, _P, _P], ctypes.c_float),
         "hg_score_exact": ([_P, _P, _P], ctypes.c_float),
         "hg_rerank_candidates": ([A, _P, _P, Pp, _P, _SZ, _SZ, ctypes.POINTER(_Match), ctypes.POINTER(_Stats)], _SZ),
+        "hg_search_top_k_filtered": ([A, _P, _P, Pp, _P, _SZ, ctypes.POINTER(_Match), ctypes.POINTER(_Stats)], _SZ),
         "hg_search_fast_filtered": ([A, _P, _P, Pp, _P, _SZ, _SZ, ctypes.POINTER(_Match), ctypes.POINTER(_Stats)], _SZ),
     }
     for name, (args, res) in sig.items():

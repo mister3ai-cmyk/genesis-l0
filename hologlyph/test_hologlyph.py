@@ -1,6 +1,6 @@
 """
 test_hologlyph.py - hologlyph_l2 hash invariance, prefilter select and exact metric.
-2026-11-21 · 7 tests; run in WSL against the same libhgbench.so as the benchmark:
+2026-11-21 · 8 tests; run in WSL against the same libhgbench.so as the benchmark:
     HG_BENCH_LIB=./libhgbench.so python -m pytest -q -s test_hologlyph.py
 """
 import ctypes
@@ -214,3 +214,45 @@ def test_energy_hash_finds_planted_node():
         ranks.append(int((ham < ham[t]).sum()))
     print("\nplanted Hamming rank among 5000 (20 queries):", sorted(ranks))
     assert np.median(ranks) < 25
+
+
+def _a2_decisions(ar, q, mode, theta):
+    """C gate A2 decision per node (1 = dropped), one single-slot allow bitmap per node."""
+    w = np.ones(8, np.float32)
+    prm = hn._Params(-1e30, 1e30, theta, mode)
+    m, out = (hn._Match * 1)(), np.zeros(ar.n, np.uint8)
+    for i in range(ar.n):
+        allow = np.zeros((ar.n + 63) // 64, np.uint64)
+        allow[i >> 6] = np.uint64(1) << np.uint64(i & 63)
+        st = hn._Stats()
+        LIB.hg_search_top_k_filtered(ctypes.byref(ar.struct()), hn.ptr(q), hn.ptr(w), ctypes.byref(prm),
+                                     hn.ptr(allow), 1, m, ctypes.byref(st))
+        out[i] = st.gated_octant
+    return out
+
+
+def test_a2_invariant_gate_is_o4_invariant():
+    """HG_A2_INVARIANT: tau_x = |Y_x q_x|^2 is invariant to Y -> RY. float64 reference: 0 changed
+    decisions; C fp32: 0 changed decisions away from the border, and agrees with float64."""
+    n = 2000
+    rng = np.random.default_rng(21)
+    Y = random_subspaces(rng, n)
+    RY = np.einsum("nab,nbd->nad", random_o4(rng, n), Y)
+    q = hn.aligned((128,), np.float32)
+    q[:] = rng.standard_normal(128)
+    q64 = q.astype(np.float64)
+    blk = lambda Z, o: ((Z[:, :, 16 * o:16 * o + 16] @ q64[16 * o:16 * o + 16]) ** 2).sum(1)
+    m1, m2 = blk(Y, 3) - blk(Y, 6), blk(RY, 3) - blk(RY, 6)
+    assert np.abs(m1 - m2).max() < 1e-12 and ((m1 < 0) != (m2 < 0)).sum() == 0
+    hdr = clean_headers(n)
+    c1 = _a2_decisions(hn.Arena(LIB, hdr, as_faces(Y)), q, hn.HG_A2_INVARIANT, 0.0)
+    c2 = _a2_decisions(hn.Arena(LIB, hdr, as_faces(RY)), q, hn.HG_A2_INVARIANT, 0.0)
+    away = np.abs(m1) > 1e-4
+    assert (c1[away] != c2[away]).sum() == 0
+    assert (c1[away] == (m1[away] < 0)).all()
+    f1 = _a2_decisions(hn.Arena(LIB, hdr, as_faces(Y)), q, hn.HG_A2_FACE0, 0.0)
+    f2 = _a2_decisions(hn.Arena(LIB, hdr, as_faces(RY)), q, hn.HG_A2_FACE0, 0.0)
+    print("\nA2 changed decisions under Y -> RY: invariant %d / %d, face0 %d / %d"
+          % ((c1 != c2).sum(), n, (f1 != f2).sum(), n))
+    assert (f1 != f2).mean() > 0.05                    # legacy gate is not invariant
+    assert _a2_decisions(hn.Arena(LIB, hdr, as_faces(Y)), q, hn.HG_A2_OFF, 1e30).sum() == 0

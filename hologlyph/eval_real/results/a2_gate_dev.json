@@ -1,0 +1,71 @@
+{
+ "N": 74261,
+ "questions": 135,
+ "source": "dev LongMemEval_S, bge-small, PCA-128, F1/F2 Haiku",
+ "b5_numpy_R@5": 0.8740740740740741,
+ "face0_margin_quantiles": {
+  "0.05": -0.04311016947031021,
+  "0.25": -0.01648644544184208,
+  "0.5": 0.0011363266967236996,
+  "0.75": 0.018983500078320503,
+  "0.95": 0.046263210475444794
+ },
+ "settings": {
+  "A2 off": {
+   "pruned_mean": 0.0,
+   "R@5": 0.8740740740740741,
+   "dR@5_pp": 0.0,
+   "questions_lost": 0,
+   "questions_gained": 0,
+   "exact@5": 1.0
+  },
+  "A2 face0, theta=-0.2": {
+   "pruned_mean": 0.0,
+   "R@5": 0.8740740740740741,
+   "dR@5_pp": 0.0,
+   "questions_lost": 0,
+   "questions_gained": 0,
+   "exact@5": 1.0
+  },
+  "A2 face0, theta=-0.1": {
+   "pruned_mean": 0.0003903258912559598,
+   "R@5": 0.8740740740740741,
+   "dR@5_pp": 0.0,
+   "questions_lost": 0,
+   "questions_gained": 0,
+   "exact@5": 1.0
+  },
+  "A2 face0, theta=-0.05": {
+   "pruned_mean": 0.029946647120186673,
+   "R@5": 0.8740740740740741,
+   "dR@5_pp": 0.0,
+   "questions_lost": 0,
+   "questions_gained": 0,
+   "exact@5": 0.9970370370370369
+  },
+  "A2 face0, theta=0": {
+   "pruned_mean": 0.4833789044761264,
+   "R@5": 0.7407407407407407,
+   "dR@5_pp": -13.333333333333334,
+   "questions_lost": 19,
+   "questions_gained": 1,
+   "exact@5": 0.7644444444444444
+  },
+  "A2 invariant, theta=-0.01": {
+   "pruned_mean": 0.00011325347330568179,
+   "R@5": 0.8814814814814815,
+   "dR@5_pp": 0.7407407407407408,
+   "questions_lost": 0,
+   "questions_gained": 1,
+   "exact@5": 0.9955555555555556
+  },
+  "A2 invariant, theta=0": {
+   "pruned_mean": 0.2042356294590917,
+   "R@5": 0.7925925925925926,
+   "dR@5_pp": -8.148148148148149,
+   "questions_lost": 11,
+   "questions_gained": 0,
+   "exact@5": 0.8503703703703703
+  }
+ }
+}

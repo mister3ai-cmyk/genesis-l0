@@ -172,9 +172,20 @@ static inline int score_node(const HologlyphArena *arena, size_t i,
     if (h->anis_score > p->max_anis || h->trust_scalar < p->min_trust) return 0;
 
     const float *y = arena->faces_tensor + i * HG_NODE_FLOATS;
-    float tau_trust = dot16(q + HG_OCT_TRUST * HG_OCT_DIM, y + HG_OCT_TRUST * HG_OCT_DIM);
-    float tau_anis  = dot16(q + HG_OCT_ANIS  * HG_OCT_DIM, y + HG_OCT_ANIS  * HG_OCT_DIM);
-    if (tau_trust - tau_anis < p->theta_gate) return 1;
+    if (p->a2_mode == HG_A2_FACE0) {
+        float tau_trust = dot16(q + HG_OCT_TRUST * HG_OCT_DIM, y + HG_OCT_TRUST * HG_OCT_DIM);
+        float tau_anis  = dot16(q + HG_OCT_ANIS  * HG_OCT_DIM, y + HG_OCT_ANIS  * HG_OCT_DIM);
+        if (tau_trust - tau_anis < p->theta_gate) return 1;
+    } else if (p->a2_mode == HG_A2_INVARIANT) {
+        float tau_trust = 0.0f, tau_anis = 0.0f;
+        for (int f = 0; f < HG_FACES; f++) {
+            float a = dot16(q + HG_OCT_TRUST * HG_OCT_DIM, y + f * HG_DIM + HG_OCT_TRUST * HG_OCT_DIM);
+            float b = dot16(q + HG_OCT_ANIS  * HG_OCT_DIM, y + f * HG_DIM + HG_OCT_ANIS  * HG_OCT_DIM);
+            tau_trust += a * a;
+            tau_anis  += b * b;
+        }
+        if (tau_trust - tau_anis < p->theta_gate) return 1;
+    }
 
     float p0 = dot128(qt, y);
     float p1 = dot128(qt, y + HG_DIM);
