@@ -1,0 +1,13 @@
+dataset,method,qps_4threads,recall_exact
+random,hologlyph FACEWISE_FOLDED pool768 (4 single-thread queries in parallel),1949.2,35.52
+random,hologlyph SUBSPACE_ENERGY pool768 (4 single-thread queries in parallel),4288.9,10.3
+random,HNSW M16 Kp100 ef200 (graph 4 thr + rerank 1 thr),911.2,5.82
+random,"HNSW M16 Kp100 ef200 (graph only, 4 thr)",948.7,
+clustered15,hologlyph FACEWISE_FOLDED pool768 (4 single-thread queries in parallel),1863.0,99.83
+clustered15,hologlyph SUBSPACE_ENERGY_UNIT pool768 (4 single-thread queries in parallel),4750.8,72.6
+clustered15,HNSW M16 Kp100 ef200 (graph 4 thr + rerank 1 thr),2900.0,53.05
+clustered15,"HNSW M16 Kp100 ef200 (graph only, 4 thr)",3188.5,
+clustered30,hologlyph FACEWISE_FOLDED pool768 (4 single-thread queries in parallel),2028.3,95.64
+clustered30,hologlyph SUBSPACE_ENERGY_UNIT pool768 (4 single-thread queries in parallel),4360.3,37.98
+clustered30,HNSW M16 Kp100 ef200 (graph 4 thr + rerank 1 thr),1752.3,85.7
+clustered30,"HNSW M16 Kp100 ef200 (graph only, 4 thr)",1855.3,

@@ -1,6 +1,6 @@
 /*
  * hologlyph.h — hologlyph_l2: Grassmann-manifold memory core over genesis-l0.
- * 2026-11-14 · public API: 6 functions, 5 structs.
+ * 2026-11-21 · public API: 15 functions, 5 structs, 1 enum (prefilter hash mode).
  *
  * A node is a 4-dim orthonormal subspace Y in R^128 (G(4, R^128)), stored as
  * 4 faces x 128 float32 (2048 B). R^128 = 8 octants x 16 dims:
@@ -46,15 +46,49 @@ _Static_assert(sizeof(HologlyphHeader) == 64, "HologlyphHeader must be 64 bytes"
 #define HG_MAX_POOL     4096       /* largest candidate pool (stack buffer, 16 KB) */
 
 /*
+ * Prefilter hash (arena->hash_mode; B = srp_bits = 128 or 256):
+ *
+ * HG_HASH_FACEWISE_FOLDED (0, original): one SRP code per face, B planes;
+ *   node distance = min_f min(h, B - h). Not invariant to a change of basis
+ *   Y -> RY, R in O(4); 4 codes per node.
+ * HG_HASH_SUBSPACE_ENERGY (1): 2B planes r_m ~ N(0, I_128);
+ *   e_m(Y) = sum_f <Y_f, r_m>^2 = r_m^T P r_m, P = Y^T Y (invariant to R in O(4));
+ *   bit m = [e_2m > e_2m+1], one code per node; query Q~ (rank 1):
+ *   bit m = [<Q~, r_2m>^2 > <Q~, r_2m+1>^2]. Distance = plain Hamming (no fold).
+ * HG_HASH_SUBSPACE_ENERGY_UNIT (2): same, planes normalised to |r_m| = 1, so
+ *   r r^T - s s^T is traceless (the caller normalises: hg_srp_normalize_planes).
+ * HG_HASH_SUBSPACE_CHI2 (3): B planes, node bit = [e_m > 3.3567] (median of
+ *   chi^2_4), query bit = [<Q~, r_m>^2 / |Q~|^2 > 0.4549] (median of chi^2_1).
+ *   Comparison mode only: node and query have different rank.
+ */
+typedef enum {
+    HG_HASH_FACEWISE_FOLDED      = 0,
+    HG_HASH_SUBSPACE_ENERGY      = 1,
+    HG_HASH_SUBSPACE_ENERGY_UNIT = 2,
+    HG_HASH_SUBSPACE_CHI2        = 3
+} hg_hash_mode;
+
+/* Number of planes a mode needs for srp_bits B. */
+#define HG_PLANES_FOR(mode, B) (((mode) == HG_HASH_SUBSPACE_ENERGY || \
+                                 (mode) == HG_HASH_SUBSPACE_ENERGY_UNIT) ? 2u * (B) : (B))
+/* uint64 words of code per node. */
+#define HG_CODE_WORDS(mode, B) ((mode) == HG_HASH_FACEWISE_FOLDED ? HG_FACES * (B) / 64u : (B) / 64u)
+
+/*
  * headers[capacity] and faces_tensor[capacity][4][128] (64-byte aligned).
  * Headers are checked first, so a node rejected by its header never touches
  * faces_tensor.
  *
- * Optional folded-SRP prefilter (srp_bits = 128 or 256, 0 = off):
- *   srp_planes  [srp_bits][128]              float, N(0,1) normals
- *   srp_codes   [capacity][4][srp_bits/64]   uint64, one code per face
- *   srp_scratch [capacity]                   uint8, per-query work buffer
- * srp_scratch is written by every fast query: one fast query per arena at a time.
+ * Optional prefilter (srp_bits = 128 or 256, 0 = off), see hash_mode above:
+ *   srp_planes  [HG_PLANES_FOR(mode, B)][128]   float
+ *   srp_codes   [capacity][HG_CODE_WORDS(mode, B)] uint64
+ *   srp_scratch [capacity]                       uint8, per-query work buffer
+ * srp_scratch is written by every fast query: one fast query per arena at a time
+ * (give each thread its own copy of the arena struct with its own scratch).
+ *
+ * allow (optional, may be NULL): bitmap uint64[(n + 63) / 64], bit i = 1 ->
+ * slot i may be returned. Disallowed slots are skipped by the full scan and
+ * never enter the prefilter pool.
  */
 typedef struct {
     HologlyphHeader *headers;
@@ -65,6 +99,7 @@ typedef struct {
     uint64_t        *srp_codes;
     uint8_t         *srp_scratch;
     uint32_t         srp_bits;
+    uint32_t         hash_mode;    /* hg_hash_mode; 0 = original folded */
 } HologlyphArena;
 
 typedef struct {
@@ -121,20 +156,52 @@ size_t hg_rerank_candidates(const HologlyphArena *arena, const float *q,
                             const uint32_t *cand_slots, size_t n_cand,
                             size_t k, HologlyphMatch *out, HologlyphStats *stats);
 
-/* ---------------------------------------------- folded SRP prefilter */
+/*
+ * score_exact: the search metric itself, S = sum_f <Q~, Y_f>^2 = |Y Q~|^2 with
+ * Q~ = hg_weight_query(q, w). faces = one node, 4 x 128 floats. No gates.
+ */
+float hg_score_exact(const float *q, const float *faces, const float w[HG_OCTANTS]);
 
-/* Deterministic N(0,1) hyperplane normals, planes[bits][128]. */
-void hg_srp_make_planes(float *planes, uint32_t bits, uint64_t seed);
+/* hg_search_top_k restricted to slots allowed by `allow` (NULL = all). */
+size_t hg_search_top_k_filtered(const HologlyphArena *arena, const float *q,
+                                const float w[HG_OCTANTS], const HologlyphParams *params,
+                                const uint64_t *allow, size_t k, HologlyphMatch *out,
+                                HologlyphStats *stats);
 
-/* (Re)compute srp_codes for slots [from, to). Bit b = sign(<plane_b, Y_f>). */
+/* ---------------------------------------------- prefilter hash */
+
+/* Deterministic N(0,1) hyperplane normals, planes[count][128]. */
+void hg_srp_make_planes(float *planes, uint32_t count, uint64_t seed);
+
+/* Scale each of `count` planes to unit length (HG_HASH_SUBSPACE_ENERGY_UNIT). */
+void hg_srp_normalize_planes(float *planes, uint32_t count);
+
+/* (Re)compute srp_codes for slots [from, to) in arena->hash_mode. */
 void hg_srp_encode(HologlyphArena *arena, size_t from, size_t to);
 
+/* Query code for the already-weighted query qt; code has HG_SRP_MAX_BITS / 64 words. */
+void hg_query_code(const HologlyphArena *arena, const float *qt, uint64_t *code);
+
 /*
- * Folded Hamming prefilter: node distance = min over 4 faces of
- * min(h, bits - h), so a face anti-parallel to Q~ is as close as a parallel
- * one (the sign of p_f does not matter for S_proj). One pass over the codes
- * + counting select. Writes up to `pool` unique slots, returns the count.
- * qt is the already-weighted query Q~.
+ * Prefilter for any hash_mode: one pass over the codes + counting select of the
+ * `pool` nearest allowed slots. Distances are clipped to 254 (255 marks a
+ * disallowed slot and is never selected). Ties at the boundary distance are
+ * broken by slot index, so the pool does not depend on the thread count.
+ */
+size_t hg_prefilter_candidates(const HologlyphArena *arena, const float *qt,
+                               const uint64_t *allow, size_t pool, uint32_t *out_slots);
+
+/* Two-stage search with an optional allow bitmap (hg_search_fast = allow NULL). */
+size_t hg_search_fast_filtered(const HologlyphArena *arena, const float *q,
+                               const float w[HG_OCTANTS], const HologlyphParams *params,
+                               const uint64_t *allow, size_t pool, size_t k,
+                               HologlyphMatch *out, HologlyphStats *stats);
+
+/*
+ * hg_prefilter_candidates with allow = NULL (kept for API compatibility; works
+ * in every hash_mode). In HG_HASH_FACEWISE_FOLDED the node distance is min over
+ * 4 faces of min(h, bits - h), so a face anti-parallel to Q~ is as close as a
+ * parallel one. qt is the already-weighted query Q~.
  */
 size_t hg_folded_srp_candidates(const HologlyphArena *arena, const float *qt,
                                 size_t pool, uint32_t *out_slots);

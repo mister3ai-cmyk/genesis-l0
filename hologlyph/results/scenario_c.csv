@@ -1,0 +1,25 @@
+dataset,weights,method,p50_ms,recall_exact
+random,uniform 1/8,hologlyph FACEWISE_FOLDED pool768,1.56,35.81
+random,uniform 1/8,hologlyph SUBSPACE_ENERGY pool768,0.671,10.61
+random,uniform 1/8,HNSW M16 Kp100 ef200,1.06,5.9
+random,uniform 1/8,flat-IP(phi) Kp100,,14.86
+random,skewed: octant 0 = 0.6,hologlyph FACEWISE_FOLDED pool768,1.465,32.71
+random,skewed: octant 0 = 0.6,hologlyph SUBSPACE_ENERGY pool768,0.611,7.58
+random,skewed: octant 0 = 0.6,HNSW M16 Kp100 ef200,1.006,5.06
+random,skewed: octant 0 = 0.6,flat-IP(phi) Kp100,,14.22
+clustered15,uniform 1/8,hologlyph FACEWISE_FOLDED pool768,1.424,99.83
+clustered15,uniform 1/8,hologlyph SUBSPACE_ENERGY_UNIT pool768,0.601,75.19
+clustered15,uniform 1/8,HNSW M16 Kp100 ef200,0.321,54.21
+clustered15,uniform 1/8,flat-IP(phi) Kp100,,94.27
+clustered15,skewed: octant 0 = 0.6,hologlyph FACEWISE_FOLDED pool768,1.395,97.81
+clustered15,skewed: octant 0 = 0.6,hologlyph SUBSPACE_ENERGY_UNIT pool768,0.606,44.2
+clustered15,skewed: octant 0 = 0.6,HNSW M16 Kp100 ef200,0.366,43.19
+clustered15,skewed: octant 0 = 0.6,flat-IP(phi) Kp100,,93.05
+clustered30,uniform 1/8,hologlyph FACEWISE_FOLDED pool768,1.425,96.21
+clustered30,uniform 1/8,hologlyph SUBSPACE_ENERGY_UNIT pool768,0.624,39.24
+clustered30,uniform 1/8,HNSW M16 Kp100 ef200,0.514,86.12
+clustered30,uniform 1/8,flat-IP(phi) Kp100,,88.93
+clustered30,skewed: octant 0 = 0.6,hologlyph FACEWISE_FOLDED pool768,1.431,86.63
+clustered30,skewed: octant 0 = 0.6,hologlyph SUBSPACE_ENERGY_UNIT pool768,0.617,23.03
+clustered30,skewed: octant 0 = 0.6,HNSW M16 Kp100 ef200,0.572,68.71
+clustered30,skewed: octant 0 = 0.6,flat-IP(phi) Kp100,,71.94

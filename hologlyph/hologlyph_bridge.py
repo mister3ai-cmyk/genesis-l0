@@ -1,6 +1,6 @@
 """
 hologlyph_bridge.py - ctypes/numpy bridge to libhologlyph.so (hologlyph_l2).
-2026-11-14 · 1 class (HologlyphMemory), 2 public methods; default search = folded SRP + Grassmann re-rank.
+2026-11-21 · 1 class (HologlyphMemory), 2 public methods; default search = hash prefilter + Grassmann re-rank.
 
 Memory is owned by Python (numpy, or np.memmap when `path` is given) and
 passed to C by pointer; the C side never allocates.
@@ -21,6 +21,16 @@ from typing import Dict, List, Optional
 import numpy as np
 
 HG_DIM, HG_OCTANTS, HG_FACES, HG_MAX_K = 128, 8, 4, 32
+# hg_hash_mode (hologlyph.h)
+HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY, HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2 = 0, 1, 2, 3
+
+
+def planes_for(mode: int, bits: int) -> int:
+    return 2 * bits if mode in (HG_HASH_SUBSPACE_ENERGY, HG_HASH_SUBSPACE_ENERGY_UNIT) else bits
+
+
+def code_words(mode: int, bits: int) -> int:
+    return HG_FACES * bits // 64 if mode == HG_HASH_FACEWISE_FOLDED else bits // 64
 _HDR_BYTES = 64
 _FACE_BYTES = HG_FACES * HG_DIM * 4
 _PREFIX = 64                                 # memmap file: magic, n, capacity
@@ -38,7 +48,8 @@ class _Arena(ctypes.Structure):
     _fields_ = [("headers", ctypes.c_void_p), ("faces_tensor", ctypes.c_void_p),
                 ("n", ctypes.c_size_t), ("capacity", ctypes.c_size_t),
                 ("srp_planes", ctypes.c_void_p), ("srp_codes", ctypes.c_void_p),
-                ("srp_scratch", ctypes.c_void_p), ("srp_bits", ctypes.c_uint32)]
+                ("srp_scratch", ctypes.c_void_p), ("srp_bits", ctypes.c_uint32),
+                ("hash_mode", ctypes.c_uint32)]
 
 
 class _Params(ctypes.Structure):
@@ -73,6 +84,8 @@ def _load(lib_path: Optional[str]) -> ctypes.CDLL:
     lib.hg_search_fast.restype = ctypes.c_size_t
     lib.hg_srp_make_planes.argtypes = [f32p, ctypes.c_uint32, ctypes.c_uint64]
     lib.hg_srp_make_planes.restype = None
+    lib.hg_srp_normalize_planes.argtypes = [f32p, ctypes.c_uint32]
+    lib.hg_srp_normalize_planes.restype = None
     lib.hg_srp_encode.argtypes = [ctypes.POINTER(_Arena), ctypes.c_size_t, ctypes.c_size_t]
     lib.hg_srp_encode.restype = None
     return lib
@@ -93,13 +106,16 @@ class HologlyphMemory:
 
     def __init__(self, capacity: int, path: Optional[str] = None,
                  theta_gate: float = -1e30, srp_bits: int = 256, pool: int = 768,
-                 lib_path: Optional[str] = None):
-        """srp_bits 256 / 128 enables the folded-SRP prefilter (0 = always full scan);
-        pool = unique candidate nodes re-ranked exactly (max 4096)."""
+                 lib_path: Optional[str] = None, hash_mode: int = HG_HASH_FACEWISE_FOLDED):
+        """srp_bits 256 / 128 enables the hash prefilter (0 = always full scan);
+        pool = unique candidate nodes re-ranked exactly (max 4096); hash_mode = HG_HASH_*."""
         if capacity <= 0:
             raise ValueError("capacity must be positive")
         if srp_bits not in (0, 128, 256):
             raise ValueError("srp_bits must be 0, 128 or 256")
+        if hash_mode not in (0, 1, 2, 3):
+            raise ValueError("hash_mode must be one of HG_HASH_*")
+        self.hash_mode = hash_mode
         self.lib = _load(lib_path)
         self.capacity = capacity
         self.theta_gate = theta_gate        # gate A2 off by default; set e.g. -0.05 to enable
@@ -128,12 +144,15 @@ class HologlyphMemory:
         self.faces = body[capacity * _HDR_BYTES:].view(np.float32).reshape(capacity, HG_FACES, HG_DIM)
         assert self.headers.ctypes.data % 64 == 0 and self.faces.ctypes.data % 64 == 0
 
-        # SRP planes/codes live in RAM only: deterministic (seed 7), rebuilt on open.
-        self._planes = _aligned_empty(max(srp_bits, 1) * HG_DIM * 4).view(np.float32)
-        self._codes = _aligned_empty(max(capacity * HG_FACES * srp_bits // 8, 8)).view(np.uint64)
+        # Hash planes/codes live in RAM only: deterministic (seed 7), rebuilt on open.
+        n_planes = planes_for(hash_mode, srp_bits)
+        self._planes = _aligned_empty(max(n_planes, 1) * HG_DIM * 4).view(np.float32)
+        self._codes = _aligned_empty(max(capacity * code_words(hash_mode, srp_bits) * 8, 8)).view(np.uint64)
         self._scratch = _aligned_empty(capacity)
         if srp_bits:
-            self.lib.hg_srp_make_planes(_f32p(self._planes), srp_bits, 7)
+            self.lib.hg_srp_make_planes(_f32p(self._planes), n_planes, 7)
+            if hash_mode == HG_HASH_SUBSPACE_ENERGY_UNIT:
+                self.lib.hg_srp_normalize_planes(_f32p(self._planes), n_planes)
             if len(self):
                 self.lib.hg_srp_encode(ctypes.byref(self._arena()), 0, len(self))
 
@@ -143,7 +162,7 @@ class HologlyphMemory:
     def _arena(self) -> _Arena:
         return _Arena(self.headers.ctypes.data, self.faces.ctypes.data, len(self), self.capacity,
                       self._planes.ctypes.data, self._codes.ctypes.data, self._scratch.ctypes.data,
-                      self.srp_bits)
+                      self.srp_bits, self.hash_mode)
 
     def inglyph(self, glyph_id: int, faces_4x128, trust: float = 1.0, anis: float = 0.0) -> int:
         """Orthonormalise 4 faces (MGS) into the next slot; returns the slot index."""
@@ -169,7 +188,7 @@ class HologlyphMemory:
     def recall_for_llm(self, query_128, octant_weights_8, top_k: int = 5,
                        min_trust: float = 0.5, max_anis: float = 0.2,
                        exact: bool = False) -> List[Dict]:
-        """Gated Grassmann top-k. Default: folded-SRP prefilter (self.pool nodes) + exact
+        """Gated Grassmann top-k. Default: hash prefilter (self.pool nodes) + exact
         re-rank; exact=True (or srp_bits=0) scans every node. Weights are clipped at 0
         and normalised to sum 1."""
         q = np.ascontiguousarray(query_128, dtype=np.float32)

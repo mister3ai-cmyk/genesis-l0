@@ -1,0 +1,216 @@
+"""
+test_hologlyph.py - hologlyph_l2 hash invariance, prefilter select and exact metric.
+2026-11-21 · 7 tests; run in WSL against the same libhgbench.so as the benchmark:
+    HG_BENCH_LIB=./libhgbench.so python -m pytest -q -s test_hologlyph.py
+"""
+import ctypes
+import os
+import sys
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hg_native as hn  # noqa: E402
+
+try:
+    LIB = hn.load()
+except OSError as e:                                   # pragma: no cover
+    pytest.skip(f"libhgbench.so not loadable: {e}", allow_module_level=True)
+
+E, EU, F, C2 = (hn.HG_HASH_SUBSPACE_ENERGY, hn.HG_HASH_SUBSPACE_ENERGY_UNIT,
+                hn.HG_HASH_FACEWISE_FOLDED, hn.HG_HASH_SUBSPACE_CHI2)
+
+
+def random_subspaces(rng, n):
+    """n orthonormal 4 x 128 bases (rows = faces), float64."""
+    G = rng.standard_normal((n, 128, 4))
+    Qm, _ = np.linalg.qr(G)
+    return np.transpose(Qm, (0, 2, 1)).copy()
+
+
+def random_o4(rng, n):
+    """R in O(4) incl. det = -1: QR of a Gaussian, columns times random signs."""
+    Qm, Rm = np.linalg.qr(rng.standard_normal((n, 4, 4)))
+    Qm = Qm * np.sign(np.diagonal(Rm, axis1=1, axis2=2))[:, None, :]
+    return Qm * rng.choice([-1.0, 1.0], size=(n, 1, 4))
+
+
+def clean_headers(n):
+    h = hn.aligned((n,), hn.HEADER_DTYPE)
+    h[:] = 0
+    h["glyph_id"] = 1_000_000 + np.arange(n)
+    h["trust_scalar"] = 1.0
+    return h
+
+
+def as_faces(Y):
+    f = hn.aligned((len(Y), 4, 128), np.float32)
+    f[:] = Y
+    return f
+
+
+def code_bits(arena):
+    w = hn.code_words(arena.mode, arena.bits)
+    return np.unpackbits(arena.codes.reshape(arena.n, w).view(np.uint8), axis=1, bitorder="little")
+
+
+def energy_ref(Y, planes64, bits):
+    """float64 reference energies e[n, 2B] and bits[n, B] of the pairwise ENERGY hash."""
+    e = np.einsum("nfd,md->nfm", Y, planes64[:2 * bits]) ** 2
+    e = e.sum(axis=1)
+    return e, (e[:, 0::2] > e[:, 1::2]).astype(np.uint8)
+
+
+def invariance_report(n=10_000, bits=256, seed=11):
+    """Numbers for test + BENCH_RESULTS: bit flips under Y -> RY per mode."""
+    rng = np.random.default_rng(seed)
+    Y = random_subspaces(rng, n)
+    RY = np.einsum("nab,nbd->nad", random_o4(rng, n), Y)
+    out = {}
+    hdr = clean_headers(n)
+    for mode in (E, EU):
+        a1 = hn.Arena(LIB, hdr, as_faces(Y), mode, bits)
+        a2 = hn.Arena(LIB, hdr, as_faces(RY), mode, bits)
+        p64 = a1.planes.astype(np.float64)
+        e1, b_ref = energy_ref(Y, p64, bits)
+        _, b_ref2 = energy_ref(RY, p64, bits)
+        scale = float(np.mean(e1))
+        border = np.abs(e1[:, 0::2] - e1[:, 1::2]) < 1e-4 * scale
+        c1, c2 = code_bits(a1)[:, :bits], code_bits(a2)[:, :bits]
+        flips = c1 != c2
+        out[hn.MODE_NAMES[mode]] = {
+            "f64_nodes_with_diff": int((b_ref != b_ref2).any(axis=1).sum()),
+            "fp32_flipped_bits": int(flips.sum()),
+            "fp32_flips_outside_border": int((flips & ~border).sum()),
+            "border_bit_frac": float(border.mean()),
+            "fp32_vs_f64_outside_border": int(((c1 != b_ref) & ~border).sum()),
+        }
+    a1 = hn.Arena(LIB, hdr, as_faces(Y), F, bits)
+    a2 = hn.Arena(LIB, hdr, as_faces(RY), F, bits)
+    d = (code_bits(a1) != code_bits(a2)).sum(axis=1)
+    out["FACEWISE_FOLDED"] = {"mean_diff_bits_of_%d" % (4 * bits): float(d.mean()),
+                              "nodes_with_diff_frac": float((d > 0).mean())}
+    return out
+
+
+def test_subspace_hash_invariance():
+    rep = invariance_report()
+    print("\ninvariance:", rep)
+    for name in ("SUBSPACE_ENERGY", "SUBSPACE_ENERGY_UNIT"):
+        r = rep[name]
+        assert r["f64_nodes_with_diff"] == 0                 # exact invariance in float64
+        assert r["fp32_flips_outside_border"] == 0           # fp32 flips only on near-ties
+        assert r["fp32_vs_f64_outside_border"] == 0
+        assert r["border_bit_frac"] < 1e-3
+    assert rep["FACEWISE_FOLDED"]["nodes_with_diff_frac"] > 0.99   # the bug being closed
+
+
+def test_score_exact_matches_numpy():
+    rng = np.random.default_rng(3)
+    Y = random_subspaces(rng, 50).astype(np.float32)
+    for i in range(50):
+        q = rng.standard_normal(128).astype(np.float32)
+        w = rng.random(8).astype(np.float32)
+        qt = q * np.repeat(np.sqrt(w), 16)
+        ref = float(((Y[i].astype(np.float64) @ qt.astype(np.float64)) ** 2).sum())
+        yi = np.ascontiguousarray(Y[i])                   # keep alive across the C call
+        got = LIB.hg_score_exact(hn.ptr(q), hn.ptr(yi), hn.ptr(w))
+        assert abs(got - ref) < 1e-4 * max(1.0, ref)
+
+
+def _small_arena(n, mode=E, bits=256, seed=5):
+    rng = np.random.default_rng(seed)
+    Y = random_subspaces(rng, n)
+    return hn.Arena(LIB, clean_headers(n), as_faces(Y), mode, bits), rng
+
+
+def test_full_scan_is_exact_and_allow_excludes():
+    ar, rng = _small_arena(3000)
+    Y = ar.faces.astype(np.float64)
+    prm = hn.params(hn.NO_GATES)
+    allow_bool = rng.random(ar.n) < 0.3
+    allow = hn.bitmap(allow_bool)
+    for _ in range(20):
+        q = rng.standard_normal(128).astype(np.float32)
+        w = np.full(8, 0.125, np.float32)
+        qt = q.astype(np.float64) * np.sqrt(0.125)
+        s = ((Y @ qt) ** 2).sum(axis=1)
+        for amask, aptr in ((None, None), (allow_bool, allow)):
+            lat, ids, nr = np.zeros(1), np.zeros(10, np.uint64), np.zeros(1, np.uint32)
+            LIB.hg_bench_latency(ctypes.byref(ar.struct()), hn.ptr(q), hn.ptr(w), 1, ctypes.byref(prm), 0,
+                                 0, 10, hn.ptr(aptr), 0, hn.ptr(lat), hn.ptr(ids), hn.ptr(nr))
+            ss = np.where(amask, s, -np.inf) if amask is not None else s
+            ref = set((1_000_000 + np.argsort(-ss)[:10]).tolist())
+            got = set(ids[:nr[0]].tolist())
+            assert got == ref                                   # recall_exact of brute force = 100 %
+            if amask is not None:
+                assert all(amask[g - 1_000_000] for g in got)
+            # prefilter must not return disallowed slots either
+            qtf = (q * np.sqrt(0.125)).astype(np.float32)
+            cand = np.zeros(4096, np.uint32)
+            nc = LIB.hg_prefilter_candidates(ctypes.byref(ar.struct()), hn.ptr(qtf), hn.ptr(aptr), 256, hn.ptr(cand))
+            if amask is not None:
+                assert nc == 256 and amask[cand[:nc]].all()
+
+
+def test_b256_distance_clip_and_blocked_marker():
+    ar, _ = _small_arena(4, E, 256)
+    qt = hn.aligned((128,), np.float32)
+    qt[:] = np.linspace(-1, 1, 128)
+    qc = np.zeros(4, np.uint64)
+    LIB.hg_query_code(ctypes.byref(ar.struct()), hn.ptr(qt), hn.ptr(qc))
+    codes = ar.codes.reshape(4, 4)
+    codes[0] = ~qc                                    # h = 256
+    flip255 = ~qc
+    flip255[0] ^= np.uint64(1)                        # h = 255
+    codes[1] = flip255
+    codes[2] = qc                                     # h = 0 but disallowed
+    codes[3] = qc ^ np.array([1, 0, 0, 0], np.uint64)  # h = 1
+    allow = hn.bitmap(np.array([True, True, False, True]))
+    cand = np.zeros(16, np.uint32)
+    nc = LIB.hg_prefilter_candidates(ctypes.byref(ar.struct()), hn.ptr(qt), hn.ptr(allow), 4, hn.ptr(cand))
+    assert sorted(cand[:nc].tolist()) == [0, 1, 3]     # far nodes kept, blocked node excluded
+    assert ar.scratch.tolist() == [254, 254, 255, 1]  # 255 only marks the disallowed slot
+    nc = LIB.hg_prefilter_candidates(ctypes.byref(ar.struct()), hn.ptr(qt), hn.ptr(allow), 1, hn.ptr(cand))
+    assert nc == 1 and cand[0] == 3
+
+
+def test_pool_identical_on_1_and_4_threads():
+    ar, rng = _small_arena(20000, E, 256, seed=9)
+    cand1, cand4 = np.zeros(768, np.uint32), np.zeros(768, np.uint32)
+    for _ in range(30):
+        qt = hn.aligned((128,), np.float32)
+        qt[:] = rng.standard_normal(128)
+        LIB.hg_set_threads(1)
+        n1 = LIB.hg_prefilter_candidates(ctypes.byref(ar.struct()), hn.ptr(qt), None, 768, hn.ptr(cand1))
+        LIB.hg_set_threads(4)
+        n4 = LIB.hg_prefilter_candidates(ctypes.byref(ar.struct()), hn.ptr(qt), None, 768, hn.ptr(cand4))
+        assert n1 == n4 == 768 and (cand1 == cand4).all()
+    LIB.hg_set_threads(1)
+
+
+def test_chi2_mode_encodes():
+    ar, _ = _small_arena(500, C2, 128)
+    bits = code_bits(ar)[:, :128]
+    assert 0.3 < bits.mean() < 0.7                    # median threshold -> about half the bits set
+
+
+def test_energy_hash_finds_planted_node():
+    """Planted query as in the benchmark (noise 0.5 of the signal norm): the target's
+    ENERGY Hamming distance must rank near the top of 5 000 random nodes."""
+    ar, rng = _small_arena(5000, E, 256, seed=13)
+    Y = ar.faces.astype(np.float64)
+    ranks = []
+    for t in range(20):
+        sig = Y[t].T @ rng.uniform(-1, 1, 4)
+        noise = rng.uniform(-1, 1, 128)
+        qt = hn.aligned((128,), np.float32)
+        qt[:] = sig + 0.5 * np.linalg.norm(sig) / np.linalg.norm(noise) * noise
+        qc = np.zeros(4, np.uint64)
+        LIB.hg_query_code(ctypes.byref(ar.struct()), hn.ptr(qt), hn.ptr(qc))
+        x = np.bitwise_xor(ar.codes.reshape(-1, 4), qc)
+        ham = np.unpackbits(x.view(np.uint8), axis=1).sum(axis=1)
+        ranks.append(int((ham < ham[t]).sum()))
+    print("\nplanted Hamming rank among 5000 (20 queries):", sorted(ranks))
+    assert np.median(ranks) < 25
