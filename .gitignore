@@ -11,3 +11,6 @@ dist/
 *.db-wal
 *.db-shm
 wheelhouse/
+
+# eval_real: exported faces (derived from the LongMemEval cache)
+hologlyph/eval_real/data/

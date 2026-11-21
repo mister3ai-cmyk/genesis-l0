@@ -1,0 +1,56 @@
+dataset,filter,method,p50_ms,p99_ms,recall_exact,recall_planted
+random,random 50% allowed,hologlyph FACEWISE_FOLDED pool768 (native),1.765,2.189,38.68,100.0
+random,random 50% allowed,hologlyph SUBSPACE_ENERGY pool768 (native),1.29,1.538,8.7,85.49
+random,random 50% allowed,flat-IP(phi) Kp100 (masked),7.011,7.79,11.67,100.0
+random,random 50% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),2.215,3.03,6.41,49.9
+random,random 50% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,1.884,2.375,6.42,49.9
+random,random 20% allowed,hologlyph FACEWISE_FOLDED pool768 (native),1.109,1.454,46.93,100.0
+random,random 20% allowed,hologlyph SUBSPACE_ENERGY pool768 (native),0.744,0.883,9.82,95.73
+random,random 20% allowed,flat-IP(phi) Kp100 (masked),7.658,12.327,11.33,100.0
+random,random 20% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),4.8,6.565,7.93,72.04
+random,random 20% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,4.075,5.101,7.96,72.04
+random,random 5% allowed,hologlyph FACEWISE_FOLDED pool768 (native),0.395,0.503,67.55,100.0
+random,random 5% allowed,hologlyph SUBSPACE_ENERGY pool768 (native),0.363,0.453,22.32,97.37
+random,random 5% allowed,flat-IP(phi) Kp100 (masked),7.338,10.736,15.59,100.0
+random,random 5% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),14.352,18.918,13.28,89.47
+random,random 5% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,12.737,16.251,13.33,89.47
+clustered15,random 50% allowed,hologlyph FACEWISE_FOLDED pool768 (native),1.798,2.106,99.92,100.0
+clustered15,random 50% allowed,hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),1.339,2.082,78.98,89.28
+clustered15,random 50% allowed,flat-IP(phi) Kp100 (masked),7.786,10.206,99.93,100.0
+clustered15,random 50% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),0.801,2.415,65.83,66.28
+clustered15,random 50% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,0.589,0.95,65.75,66.08
+clustered15,random 20% allowed,hologlyph FACEWISE_FOLDED pool768 (native),1.195,1.602,99.95,100.0
+clustered15,random 20% allowed,hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),0.762,1.008,86.66,93.47
+clustered15,random 20% allowed,flat-IP(phi) Kp100 (masked),9.45,16.742,99.96,100.0
+clustered15,random 20% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),1.694,2.742,77.17,75.38
+clustered15,random 20% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,1.328,2.022,76.94,74.87
+clustered15,random 5% allowed,hologlyph FACEWISE_FOLDED pool768 (native),0.412,0.59,89.86,100.0
+clustered15,random 5% allowed,hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),0.369,0.474,71.8,97.87
+clustered15,random 5% allowed,flat-IP(phi) Kp100 (masked),9.507,16.576,72.95,100.0
+clustered15,random 5% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),6.007,7.803,62.55,78.72
+clustered15,random 5% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,4.773,5.731,62.53,80.85
+clustered15,"cluster 5% allowed, half of query clusters blocked",hologlyph FACEWISE_FOLDED pool768 (native),0.219,0.296,78.08,100.0
+clustered15,"cluster 5% allowed, half of query clusters blocked",hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),0.211,0.563,57.49,98.0
+clustered15,"cluster 5% allowed, half of query clusters blocked",flat-IP(phi) Kp100 (masked),8.097,11.039,53.51,99.6
+clustered15,"cluster 5% allowed, half of query clusters blocked",HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),5.081,15.611,46.07,85.0
+clustered15,"cluster 5% allowed, half of query clusters blocked",HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,4.701,6.235,46.14,85.6
+clustered30,random 50% allowed,hologlyph FACEWISE_FOLDED pool768 (native),1.823,2.317,97.53,100.0
+clustered30,random 50% allowed,hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),1.308,1.536,43.06,87.13
+clustered30,random 50% allowed,flat-IP(phi) Kp100 (masked),7.893,10.668,92.5,100.0
+clustered30,random 50% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),1.277,1.821,91.74,97.08
+clustered30,random 50% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,1.044,1.406,91.81,97.08
+clustered30,random 20% allowed,hologlyph FACEWISE_FOLDED pool768 (native),1.187,1.596,98.68,100.0
+clustered30,random 20% allowed,hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),0.764,0.994,51.63,94.47
+clustered30,random 20% allowed,flat-IP(phi) Kp100 (masked),7.86,11.33,94.4,100.0
+clustered30,random 20% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),3.056,4.088,93.45,94.47
+clustered30,random 20% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,2.608,3.843,93.49,94.47
+clustered30,random 5% allowed,hologlyph FACEWISE_FOLDED pool768 (native),0.412,0.528,90.59,100.0
+clustered30,random 5% allowed,hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),0.377,0.553,54.82,97.87
+clustered30,random 5% allowed,flat-IP(phi) Kp100 (masked),7.752,9.669,70.67,100.0
+clustered30,random 5% allowed,HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),10.33,13.279,69.17,97.87
+clustered30,random 5% allowed,HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,8.673,10.717,69.15,97.87
+clustered30,"cluster 5% allowed, half of query clusters blocked",hologlyph FACEWISE_FOLDED pool768 (native),0.227,0.311,81.64,100.0
+clustered30,"cluster 5% allowed, half of query clusters blocked",hologlyph SUBSPACE_ENERGY_UNIT pool768 (native),0.212,0.322,51.35,98.4
+clustered30,"cluster 5% allowed, half of query clusters blocked",flat-IP(phi) Kp100 (masked),7.771,9.475,54.85,100.0
+clustered30,"cluster 5% allowed, half of query clusters blocked",HNSW M16 Kp100 ef200 filter= (Python callback; holds GIL),7.93,19.619,53.63,98.8
+clustered30,"cluster 5% allowed, half of query clusters blocked",HNSW M16 Kp100 ef200 post-filter k=ceil(Kp/frac)*2,8.527,10.563,53.39,98.8

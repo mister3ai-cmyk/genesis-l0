@@ -1,0 +1,87 @@
+{
+ "env": {
+  "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+  "governor": "n/a (WSL)",
+  "ram_GB": 8.2,
+  "gcc": "gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "flags": "-O3 -march=native -ffast-math -fopenmp",
+  "hnswlib": "0.8.0 (pip, venv ~/.venvs/hg-bench)",
+  "numpy": "2.5.5",
+  "python": "3.14.4",
+  "git": "467e0a3",
+  "OMP_PROC_BIND": "close",
+  "hnsw_build_threads": 6,
+  "N": 140000,
+  "eval_queries": 1000,
+  "tune_queries": 300,
+  "warmup": 100
+ },
+ "random": {
+  "planted_decomposition": {
+   "gates A1+A2, random weights (bench_hologlyph.c)": 88.8,
+   "gate A1 only, random weights": 100.0,
+   "no gates, random weights": 100.0,
+   "no gates, uniform weights 1/8": 100.0,
+   "no gates, unweighted (w_k = 1)": 100.0
+  },
+  "A2_decision_changed_under_RY_frac": 0.2067,
+  "A2_reject_frac": 0.1318,
+  "brute_p50_ms": 14.170226000000001,
+  "brute_p99_ms": 18.833299509999996,
+  "brute_recall_planted": 100.0,
+  "tune_choice": {
+   "FACEWISE_FOLDED": 256,
+   "SUBSPACE_ENERGY": 256,
+   "SUBSPACE_ENERGY_UNIT": 256,
+   "SUBSPACE_CHI2": 256
+  },
+  "energy_star": "SUBSPACE_ENERGY",
+  "ctypes_energy_star_pool768_p50_ms": 0.6437484999821663,
+  "phi_db_s": 3.449763961000002,
+  "energy_star_B": 256
+ },
+ "clustered15": {
+  "brute_p50_ms": 13.484057,
+  "brute_p99_ms": 16.0602788,
+  "brute_recall_planted": 100.0,
+  "sigma": 0.024111588812502305,
+  "angle_median": 15.005715286624845,
+  "angle_p10_p90": [
+   14.44174762971409,
+   15.588944372070207
+  ],
+  "angle_calib": 15.001793766922033,
+  "tune_choice": {
+   "FACEWISE_FOLDED": 256,
+   "SUBSPACE_ENERGY": 256,
+   "SUBSPACE_ENERGY_UNIT": 256,
+   "SUBSPACE_CHI2": 256
+  },
+  "energy_star": "SUBSPACE_ENERGY_UNIT",
+  "ctypes_energy_star_pool768_p50_ms": 0.6393520000074204,
+  "phi_db_s": 3.184380155999861,
+  "energy_star_B": 256
+ },
+ "clustered30": {
+  "brute_p50_ms": 13.954278,
+  "brute_p99_ms": 22.88021369,
+  "brute_recall_planted": 100.0,
+  "sigma": 0.05213095190038075,
+  "angle_median": 30.01817258003311,
+  "angle_p10_p90": [
+   29.030842410621176,
+   31.009518544999032
+  ],
+  "angle_calib": 30.009433446183866,
+  "tune_choice": {
+   "FACEWISE_FOLDED": 256,
+   "SUBSPACE_ENERGY": 256,
+   "SUBSPACE_ENERGY_UNIT": 256,
+   "SUBSPACE_CHI2": 256
+  },
+  "energy_star": "SUBSPACE_ENERGY_UNIT",
+  "ctypes_energy_star_pool768_p50_ms": 0.6380115000865771,
+  "phi_db_s": 3.1232319419998475,
+  "energy_star_B": 256
+ }
+}

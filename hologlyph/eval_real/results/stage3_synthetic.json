@@ -1,0 +1,97 @@
+{
+ "N": 50000,
+ "chains": 500,
+ "superseded": 1732,
+ "rows": {
+  "exact | supersession off | current value (latest of chain)": {
+   "n": 792,
+   "hit@1": 0.26641414141414144,
+   "hit@5": 0.9558080808080808
+  },
+  "exact | supersession off | old value (history=True)": {
+   "n": 597,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "exact | supersession off | plain node (no key)": {
+   "n": 611,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "exact | supersession on | current value (latest of chain)": {
+   "n": 792,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "exact | supersession on | old value (history=True)": {
+   "n": 597,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "exact | supersession on | plain node (no key)": {
+   "n": 611,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "exact | supersession on, no history flag | current value (latest of chain)": {
+   "n": 792,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "exact | supersession on, no history flag | old value (history=True)": {
+   "n": 597,
+   "hit@1": 0.0,
+   "hit@5": 0.0
+  },
+  "exact | supersession on, no history flag | plain node (no key)": {
+   "n": 611,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "FACEWISE 256/768 | supersession off | current value (latest of chain)": {
+   "n": 792,
+   "hit@1": 0.26641414141414144,
+   "hit@5": 0.9558080808080808
+  },
+  "FACEWISE 256/768 | supersession off | old value (history=True)": {
+   "n": 597,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "FACEWISE 256/768 | supersession off | plain node (no key)": {
+   "n": 611,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "FACEWISE 256/768 | supersession on | current value (latest of chain)": {
+   "n": 792,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "FACEWISE 256/768 | supersession on | old value (history=True)": {
+   "n": 597,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "FACEWISE 256/768 | supersession on | plain node (no key)": {
+   "n": 611,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "FACEWISE 256/768 | supersession on, no history flag | current value (latest of chain)": {
+   "n": 792,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  },
+  "FACEWISE 256/768 | supersession on, no history flag | old value (history=True)": {
+   "n": 597,
+   "hit@1": 0.0,
+   "hit@5": 0.0
+  },
+  "FACEWISE 256/768 | supersession on, no history flag | plain node (no key)": {
+   "n": 611,
+   "hit@1": 1.0,
+   "hit@5": 1.0
+  }
+ }
+}

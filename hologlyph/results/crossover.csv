@@ -1,0 +1,20 @@
+N,method,p50_ms,recall_exact
+35000,"hologlyph SUBSPACE_ENERGY pool768 native, 1 thr",0.232,9.56
+35000,"hologlyph SUBSPACE_ENERGY pool768 native, 4 thr",0.187,9.56
+35000,HNSW M16 Kp100 ef200 + rerank (Python),0.857,7.43
+70000,"hologlyph SUBSPACE_ENERGY pool768 native, 1 thr",0.352,8.66
+70000,"hologlyph SUBSPACE_ENERGY pool768 native, 4 thr",0.237,8.66
+70000,HNSW M16 Kp100 ef200 + rerank (Python),0.921,5.96
+140000,"hologlyph SUBSPACE_ENERGY pool768 native, 1 thr",0.608,10.3
+140000,"hologlyph SUBSPACE_ENERGY pool768 native, 4 thr",0.391,10.3
+140000,HNSW M16 Kp100 ef200 + rerank (Python),1.048,5.54
+35000,"codes-only prefilter scan (32 B/node, pool 768), 1 thr",0.115,
+35000,"codes-only prefilter scan (32 B/node, pool 768), 4 thr",0.053,
+70000,"codes-only prefilter scan (32 B/node, pool 768), 1 thr",0.224,
+70000,"codes-only prefilter scan (32 B/node, pool 768), 4 thr",0.093,
+140000,"codes-only prefilter scan (32 B/node, pool 768), 1 thr",0.462,
+140000,"codes-only prefilter scan (32 B/node, pool 768), 4 thr",0.173,
+560000,"codes-only prefilter scan (32 B/node, pool 768), 1 thr",2.114,
+560000,"codes-only prefilter scan (32 B/node, pool 768), 4 thr",0.95,
+1000000,"codes-only prefilter scan (32 B/node, pool 768), 1 thr",3.628,
+1000000,"codes-only prefilter scan (32 B/node, pool 768), 4 thr",1.881,

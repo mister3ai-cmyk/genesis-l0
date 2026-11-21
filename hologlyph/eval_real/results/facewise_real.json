@@ -1,0 +1,170 @@
+{
+ "N": 74261,
+ "queries": 135,
+ "source": "dev LongMemEval_S pooled haystacks, offline faces (b), bge PCA-128",
+ "threads_max": 12,
+ "rows": [
+  {
+   "method": "full scan",
+   "bits": "-",
+   "pool": 0,
+   "threads": 1,
+   "recall_exact@10": 1.0,
+   "p50_ms": 7.396345,
+   "p99_ms": 8.168267199999999
+  },
+  {
+   "method": "full scan",
+   "bits": "-",
+   "pool": 0,
+   "threads": 4,
+   "recall_exact@10": 1.0,
+   "p50_ms": 7.3935900000000006,
+   "p99_ms": 8.53235646
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 256,
+   "threads": 1,
+   "recall_exact@10": 0.7733333333333334,
+   "p50_ms": 0.310879,
+   "p99_ms": 0.5332812
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 256,
+   "threads": 4,
+   "recall_exact@10": 0.7733333333333334,
+   "p50_ms": 0.146157,
+   "p99_ms": 0.2346218399999999
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 768,
+   "threads": 1,
+   "recall_exact@10": 0.8896296296296295,
+   "p50_ms": 0.429547,
+   "p99_ms": 0.6870408799999999
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 768,
+   "threads": 4,
+   "recall_exact@10": 0.8896296296296295,
+   "p50_ms": 0.236982,
+   "p99_ms": 0.33757686000000003
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 2048,
+   "threads": 1,
+   "recall_exact@10": 0.9474074074074075,
+   "p50_ms": 0.713786,
+   "p99_ms": 1.02469608
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 2048,
+   "threads": 4,
+   "recall_exact@10": 0.9474074074074075,
+   "p50_ms": 0.472659,
+   "p99_ms": 0.6289751
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 4096,
+   "threads": 1,
+   "recall_exact@10": 0.968888888888889,
+   "p50_ms": 1.048921,
+   "p99_ms": 1.4216635
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 128,
+   "pool": 4096,
+   "threads": 4,
+   "recall_exact@10": 0.968888888888889,
+   "p50_ms": 0.869107,
+   "p99_ms": 1.2803980199999996
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 256,
+   "threads": 1,
+   "recall_exact@10": 0.9214814814814816,
+   "p50_ms": 0.702616,
+   "p99_ms": 1.03907664
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 256,
+   "threads": 4,
+   "recall_exact@10": 0.9214814814814816,
+   "p50_ms": 0.224935,
+   "p99_ms": 0.5070630799999997
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 768,
+   "threads": 1,
+   "recall_exact@10": 0.9718518518518517,
+   "p50_ms": 0.850909,
+   "p99_ms": 1.17410204
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 768,
+   "threads": 4,
+   "recall_exact@10": 0.9718518518518517,
+   "p50_ms": 0.343539,
+   "p99_ms": 0.6179363
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 2048,
+   "threads": 1,
+   "recall_exact@10": 0.9903703703703702,
+   "p50_ms": 1.0388430000000002,
+   "p99_ms": 1.44419138
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 2048,
+   "threads": 4,
+   "recall_exact@10": 0.9903703703703702,
+   "p50_ms": 0.573711,
+   "p99_ms": 0.76694874
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 4096,
+   "threads": 1,
+   "recall_exact@10": 0.9955555555555556,
+   "p50_ms": 1.3329490000000002,
+   "p99_ms": 1.66682368
+  },
+  {
+   "method": "FACEWISE_FOLDED",
+   "bits": 256,
+   "pool": 4096,
+   "threads": 4,
+   "recall_exact@10": 0.9955555555555556,
+   "p50_ms": 0.9448190000000001,
+   "p99_ms": 1.23496444
+  }
+ ]
+}
