@@ -260,7 +260,7 @@ def test_a2_invariant_gate_is_o4_invariant():
 
 
 def test_header_is_64_bytes_and_matches_python_dtype():
-    lay = np.zeros(15, np.uint32)
+    lay = np.zeros(16, np.uint32)
     LIB.hg_header_layout(hn.ptr(lay))
     assert lay[0] == 64 == hn.HEADER_DTYPE.itemsize
     assert lay[1:].tolist() == [hn.HEADER_DTYPE.fields[f][1] for f in hn.HEADER_DTYPE.names]
@@ -503,9 +503,8 @@ def test_bridge_supersession_incremental_matches_bulk_and_late_facts(tmp_path):
     m.flush()
     del m
     m2 = hb.HologlyphMemory(n, path=path, lib_path=lib, srp_bits=0)         # writer index rebuilt on open
-    m2_latest = {k: s for k, s in m2._latest.items()}
     vis = np.flatnonzero((keys != 0) & ~got)
-    assert m2_latest == {int(keys[s]): int(s) for s in vis}
+    assert {k: m2.visible_slots(k) for k in m2._key_slots} == {int(keys[s]): [int(s)] for s in vis}
 
 
 def test_decay_zero_is_bit_identical_and_prior_is_additive():

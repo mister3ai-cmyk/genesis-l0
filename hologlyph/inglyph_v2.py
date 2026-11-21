@@ -19,6 +19,8 @@ Each face is embedded (384-d), centred and projected 384 -> 128 with the FROZEN
 artifacts in artifacts/proj_v<N>/ (sha256 checked on load; never refit incrementally:
 old nodes would live in another coordinate system), L2-normalised, and written to the
 arena WITHOUT orthonormalisation. proj_version goes into the node header.
+Time decay: off by default (decay_lambda 0 here, decay_beta 0 in the query); on only when the
+source passes decay_lambdas AND the caller passes decay_beta.
 Durability: dump() writes a self-contained snapshot atomically (tmp + fsync +
 os.replace); the id map lives in SQLite (WAL).
 """
@@ -385,7 +387,11 @@ class Ingestor:
     def add(self, texts: Sequence[str], glyph_ids: Sequence[int], *,
             summaries: Optional[Sequence[Optional[str]]] = None, entities: Optional[Sequence[Optional[str]]] = None,
             created_ts: Optional[Sequence[int]] = None, key_ids: Optional[Sequence[int]] = None,
-            source_id: int = 0, trust: float = 1.0) -> List[int]:
+            source_id: int = 0, trust: float = 1.0,
+            decay_lambdas: Optional[Sequence[float]] = None) -> List[int]:
+        """decay_lambdas: per-node decay rate (1/s) ONLY when the source states one; default 0 =
+        no time decay (and the query's decay_beta defaults to 0 as well). key_ids: explicit
+        source keys only - fact_keys.fact_attribute is experimental and never called here."""
         n = len(texts)
         v0 = self.embed(list(texts))
         v1 = self._vecs(list(summaries) if summaries is not None else [None] * n)
@@ -402,10 +408,12 @@ class Ingestor:
                 faces, mask = project_faces(vec, self.proj)
                 ts = now if created_ts is None else int(created_ts[i])
                 kid = 0 if key_ids is None else int(key_ids[i])
+                lam = 0.0 if decay_lambdas is None else float(decay_lambdas[i])
                 raw = t.encode("utf-8")
                 slot = self.mem.inglyph(int(glyph_ids[i]), faces, trust=trust, orthonormalize=False,
                                         created_ts=ts, key_id=kid, source_id=source_id,
-                                        proj_version=self.proj.version, content=raw, face_mask=mask)
+                                        proj_version=self.proj.version, content=raw, face_mask=mask,
+                                        decay_lambda=lam)
                 self.db.execute("INSERT INTO glyph VALUES (?,?,?,?,?,?,?,?,?)",
                                 (int(glyph_ids[i]), slot, source_id, kid, ts, self.proj.version,
                                  hashlib.sha256(raw).hexdigest()[:32], mask, t))

@@ -1,6 +1,7 @@
 """
 hg_native.py - ctypes binding of libhgbench.so (hologlyph.c + hg_benchlib.c) for
-test_hologlyph.py and bench_vs_hnsw.py. 2026-11-21 · 1 class (Arena), 4 helpers; 20 bound C functions.
+test_hologlyph.py, bench_vs_hnsw.py and bench_anis_temporal.py. 2026-11-21 · 1 class (Arena), 4 helpers,
+4 ctypes structs (access log, consolidation); 26 bound C functions.
 
 One build serves the test and the benchmark:
     gcc -O3 -march=native -ffast-math -fopenmp -shared -fPIC hologlyph.c hg_benchlib.c \
@@ -17,7 +18,7 @@ from hologlyph_bridge import (HEADER_DTYPE, trust_q16, neutral_headers, face_mas
                               _Params, _Stats, _aligned_empty, code_words, planes_for,
                               HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY,
                               HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2,
-                              HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT)
+                              HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT, HG_ANIS_QUARANTINE)
 
 MODE_NAMES = {HG_HASH_FACEWISE_FOLDED: "FACEWISE_FOLDED", HG_HASH_SUBSPACE_ENERGY: "SUBSPACE_ENERGY",
               HG_HASH_SUBSPACE_ENERGY_UNIT: "SUBSPACE_ENERGY_UNIT", HG_HASH_SUBSPACE_CHI2: "SUBSPACE_CHI2"}
@@ -26,6 +27,28 @@ BENCH_GATES = (0.5, 0.2, -0.05)            # PARAMS of bench_hologlyph.c
 
 _P = ctypes.c_void_p
 _SZ = ctypes.c_size_t
+
+
+class Access(ctypes.Structure):              # = HologlyphAccess, 16 B
+    _fields_ = [("glyph_id", ctypes.c_uint64), ("slot", ctypes.c_uint32), ("ts", ctypes.c_uint32)]
+
+
+class AccessLog(ctypes.Structure):           # = HologlyphAccessLog, 192 B, 3 cache lines (use aligned_log())
+    _fields_ = [("head", ctypes.c_uint64), ("dropped", ctypes.c_uint64), ("pad0", ctypes.c_uint8 * 48),
+                ("tail", ctypes.c_uint64), ("pad1", ctypes.c_uint8 * 56),
+                ("entries", ctypes.c_void_p), ("cap", ctypes.c_uint32), ("pad2", ctypes.c_uint8 * 52)]
+
+
+class ConsolidateParams(ctypes.Structure):
+    _fields_ = [("alpha", ctypes.c_float), ("kappa_min", ctypes.c_float),
+                ("min_trust", ctypes.c_float), ("max_anis", ctypes.c_float)]
+
+
+class ConsolidateStats(ctypes.Structure):
+    _fields_ = [(f, ctypes.c_uint64) for f in ("read", "stale", "duplicate", "skipped_anis", "strengthened")]
+
+
+assert ctypes.sizeof(AccessLog) == 192 and ctypes.sizeof(Access) == 16 and ctypes.sizeof(_Match) == 24
 
 
 def load(path=None):
@@ -39,6 +62,11 @@ def load(path=None):
         "hg_mask_count_insert": ([A, _SZ], None),
         "hg_update_faces": ([A, _SZ, _P, ctypes.c_uint], ctypes.c_int),
         "hg_scorer_is_b4": ([A], ctypes.c_int),
+        "hg_supersede_key": ([A, _P, _SZ], _SZ),
+        "hg_node_set_trust": ([A, _SZ, ctypes.c_uint16, ctypes.c_uint32, ctypes.c_float, _P, _SZ], ctypes.c_long),
+        "hg_access_log_init": ([_P, _P, ctypes.c_uint32], ctypes.c_int),
+        "hg_access_record": ([_P, ctypes.POINTER(_Match), _SZ, ctypes.c_uint32], _SZ),
+        "hg_consolidate": ([A, _P, _SZ, ctypes.POINTER(ConsolidateParams), _P, ctypes.POINTER(ConsolidateStats)], _SZ),
         "hg_set_threads": ([ctypes.c_int], None),
         "hg_max_threads": ([], ctypes.c_int),
         "hg_bench_latency": ([A, _P, _P, _SZ, Pp, ctypes.c_int, _SZ, _SZ, _P, _SZ, _P, _P, _P], None),
@@ -73,6 +101,25 @@ def aligned(shape, dtype):
     dt = np.dtype(dtype)
     n = int(np.prod(shape))
     return _aligned_empty(max(n * dt.itemsize, 64))[:n * dt.itemsize].view(dt).reshape(shape)
+
+
+class Log:
+    """One access ring (64-aligned struct + entries), owned by Python."""
+
+    def __init__(self, lib, cap=4096):
+        self.buf = aligned((192,), np.uint8)
+        self.entries = aligned((cap * 16,), np.uint8)
+        self.struct = AccessLog.from_address(self.buf.ctypes.data)
+        assert lib.hg_access_log_init(self.addr, ptr(self.entries), cap) == 0
+
+    @property
+    def addr(self):
+        return ctypes.c_void_p(self.buf.ctypes.data)
+
+
+def log_array(logs):
+    """HologlyphAccessLog *const * for hg_consolidate."""
+    return (ctypes.c_void_p * len(logs))(*[g.buf.ctypes.data for g in logs])
 
 
 def bitmap(mask_bool):

@@ -1,6 +1,13 @@
 """
 fact_keys.py - key_id for supersession: an explicit source field, or a narrow "object + attribute" rule.
-2026-11-21 · 3 functions. NOT all regex entities: a key must name ONE updatable fact of the
+2026-11-21 · 3 functions + 2 constants.
+
+STATUS: EXPERIMENTAL, OFF BY DEFAULT, FROZEN at stage 3 (commit 568a8d2; rule set R1-R3).
+  - Nothing in the ingest calls fact_attribute; key_id is set only from an explicit source field.
+  - Do NOT tune these rules on dev LongMemEval any more: R4 was already removed after looking at
+    dev false pairs, so dev numbers for this rule are optimistic. A change needs data the rule
+    has not seen (test split or keys from a real source).
+NOT all regex entities: a key must name ONE updatable fact of the
 speaker, or two different facts would hide each other.
 
 Rule (first-person user statements only; first match wins, in this order; every rule needs a value):
@@ -18,6 +25,9 @@ key_id = crc32(namespace | attribute), never 0. The namespace is the owner of th
 import re
 import zlib
 from typing import Optional
+
+EXPERIMENTAL = True
+FROZEN_AT = "568a8d2"           # stage 3; rules R1-R3 unchanged since
 
 _NUM = (r"(?:\d[\d,.:]*|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|"
         r"fifty|a dozen)")
@@ -67,6 +77,9 @@ def key_id(namespace: str, attribute: Optional[str]) -> int:
     return k or 1
 
 
-def key_for(text: str, namespace: str, role: str = "user", explicit: Optional[str] = None) -> int:
-    """Explicit source field first (e.g. a CRM field name), else the rule."""
-    return key_id(namespace, explicit if explicit else fact_attribute(text, role))
+def key_for(text: str, namespace: str, role: str = "user", explicit: Optional[str] = None,
+            use_rule: bool = False) -> int:
+    """Explicit source field (e.g. a CRM field name) -> key; the experimental rule only with use_rule=True."""
+    if explicit:
+        return key_id(namespace, explicit)
+    return key_id(namespace, fact_attribute(text, role)) if use_rule else 0

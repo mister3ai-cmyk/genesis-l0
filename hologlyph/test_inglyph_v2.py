@@ -84,6 +84,9 @@ def test_default_ingest_is_f0_only(tmp_path):
     h = m.headers[2]
     assert h["key_id"] == 7 and h["proj_version"] == 1 and h["source_id"] == 2 and h["created_ts"] == 1_700_000_002
     assert bytes(h["content_hash"]) == hashlib.sha256(texts[2].encode()).digest()[:16]
+    assert not m.headers["decay_lambda"][:4].any()                    # no decay unless the source gives lambda
+    ing.add(["Rent is 900 now."], [104], decay_lambdas=[2.5e-7])
+    assert m.headers["decay_lambda"][4] == np.float32(2.5e-7)
     con = sqlite3.connect(db)
     assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert con.execute("SELECT slot, key_id, face_mask FROM glyph WHERE glyph_id = 102").fetchone() == (2, 7, 1)

@@ -1,6 +1,6 @@
 /*
  * hologlyph.h — hologlyph_l2: Grassmann-manifold memory core over genesis-l0.
- * 2026-11-21 · public API: 18 functions, 5 structs, 3 enums (prefilter hash, gate A2, scorer).
+ * 2026-11-21 · public API: 23 functions, 9 structs, 3 enums (prefilter hash, gate A2, scorer).
  *
  * A node is a 4-dim orthonormal subspace Y in R^128 (G(4, R^128)), stored as
  * 4 faces x 128 float32 (2048 B). R^128 = 8 octants x 16 dims:
@@ -46,8 +46,23 @@ extern "C" {
  *   37    1    node_flags     HG_NODE_* (writer side: HG_NODE_SUPERSEDED)
  *   38    2    reserved0
  *   40   16    content_hash   first 16 B of sha256 of the content
- *   56    8    reserved1
+ *   56    4    access_count   accesses counted by hg_consolidate (writer only, never read by search)
+ *   60    4    lambda0        base decay rate saved by the first hg_consolidate; 0 = not yet saved
  * Neutral defaults: trust_q16 = 65535, anis 0, decay_lambda 0, key_id 0, face_mask 0x0F.
+ * Time decay is OFF unless the source sets decay_lambda AND the query sets decay_beta (both default 0).
+ *
+ * Concurrency model: ONE writer thread, any number of search (reader) threads.
+ *   The writer may change, while searches run, only these header fields, and only through
+ *   the hg_node_* / hg_supersede_key / hg_consolidate functions below:
+ *     node_flags, trust_q16, anis_flags, anis_score, decay_lambda.
+ *   Each is written with an atomic store (memory_order_release; node_flags bits with an atomic
+ *   fetch_or / fetch_and, release) and read by the search with an atomic load
+ *   (memory_order_acquire). Fields are atomic one by one, not as a group: a search running
+ *   during a change can see a node half-way (e.g. new trust, old flags). The writer orders
+ *   every change "hide first, write the fields, show last", so such a search can miss a node
+ *   but never sees a node the finished change would hide.
+ *   Everything else (inserting nodes, hg_update_faces, hg_srp_encode, face_mask_counts) needs
+ *   the searches to be quiescent, or a new arena struct whose n is published after the writes.
  */
 typedef struct __attribute__((aligned(64))) {
     uint64_t glyph_id;
@@ -63,7 +78,8 @@ typedef struct __attribute__((aligned(64))) {
     uint8_t  node_flags;
     uint8_t  reserved0[2];
     uint8_t  content_hash[16];
-    uint8_t  reserved1[8];
+    uint32_t access_count;
+    float    lambda0;
 } HologlyphHeader;
 
 _Static_assert(sizeof(HologlyphHeader) == 64, "HologlyphHeader must be 64 bytes");
@@ -72,12 +88,19 @@ _Static_assert(offsetof(HologlyphHeader, created_ts) == 8 && offsetof(HologlyphH
                offsetof(HologlyphHeader, proj_version) == 14 && offsetof(HologlyphHeader, anis_score) == 16 &&
                offsetof(HologlyphHeader, anis_flags) == 20 && offsetof(HologlyphHeader, decay_lambda) == 24 &&
                offsetof(HologlyphHeader, source_id) == 28 && offsetof(HologlyphHeader, key_id) == 32 &&
-               offsetof(HologlyphHeader, face_mask) == 36 && offsetof(HologlyphHeader, node_flags) == 37 && offsetof(HologlyphHeader, content_hash) == 40 && offsetof(HologlyphHeader, reserved1) == 56,
+               offsetof(HologlyphHeader, face_mask) == 36 && offsetof(HologlyphHeader, node_flags) == 37 && offsetof(HologlyphHeader, content_hash) == 40 && offsetof(HologlyphHeader, access_count) == 56 &&
+               offsetof(HologlyphHeader, lambda0) == 60,
                "HologlyphHeader layout");
 
-/* node_flags. SUPERSEDED: a newer node with the same key_id exists (set by the writer
-   when it inserts that newer node); hidden unless the query asks for history. */
+/* node_flags. SUPERSEDED: hidden unless the query asks for history. Trust-aware rule
+   (hg_supersede_key): node i is superseded iff the same key_id has a node j that is newer
+   ((created_ts, slot) greater), clean (anis_flags == 0) and at least as trusted
+   (trust_q16_j >= trust_q16_i). Depends only on the set of nodes, not on arrival order. */
 #define HG_NODE_SUPERSEDED 0x01u
+
+/* anis_flags bit: quarantined; gate A1 drops the node whatever its trust / anis_score.
+   Any non-zero anis_flags makes a node "not clean": it cannot supersede another node. */
+#define HG_ANIS_QUARANTINE 0x80000000u
 
 #define HG_FACE_MASK_ALL 0x0Fu
 /* Faces a node really has: absent faces are never scored and never hashed. */
@@ -169,7 +192,7 @@ typedef enum { HG_SCORE_AUTO = 0, HG_SCORE_B5 = 1, HG_SCORE_B4 = 2 } hg_score_mo
 
 typedef struct {
     float min_trust;   /* gate A1: trust_q16 / 65535 < min_trust -> drop */
-    float max_anis;    /* gate A1: anis_score   > max_anis       -> drop */
+    float max_anis;    /* gate A1: anis_score   > max_anis       -> drop; HG_ANIS_QUARANTINE -> drop */
     float theta_gate;  /* gate A2: tau_trust - tau_anis < theta  -> drop */
     uint32_t a2_mode;  /* hg_a2_mode; 0 = legacy face-0 gate (default for old callers) */
     uint32_t search_flags; /* HG_SEARCH_*; 0 = superseded nodes hidden */
@@ -197,6 +220,7 @@ typedef struct {
     float    score;         /* S_proj = sum_f p_f^2 */
     float    chordal_dist;  /* sqrt(max(0, |Q~|^2 - S_proj)) */
     uint8_t  dominant_face; /* argmax_f |p_f| */
+    uint32_t slot;          /* arena slot (for hg_access_record) */
 } HologlyphMatch;
 
 typedef struct {
@@ -226,6 +250,79 @@ int hg_update_faces(HologlyphArena *arena, size_t slot, const float faces[HG_FAC
 
 /* 1 when the next search re-ranks with B4 (see hg_score_mode). */
 int hg_scorer_is_b4(const HologlyphArena *arena);
+
+/* ------------------------------------------- writer side (concurrency model above) */
+
+/*
+ * Recompute HG_NODE_SUPERSEDED for the n_key slots of ONE key_id (the writer keeps the
+ * key -> slots index), by the trust-aware rule at HG_NODE_SUPERSEDED. Order: set every bit
+ * that must be set, then clear every bit that must be cleared. O(n_key^2), no allocation.
+ * Slots must be < arena->capacity and hold written headers. Returns the number of bits changed.
+ */
+size_t hg_supersede_key(HologlyphArena *arena, const uint32_t *key_slots, size_t n_key);
+
+/*
+ * Change a node's trust / ANIS fields (e.g. quarantine: anis_flags |= HG_ANIS_QUARANTINE)
+ * and re-evaluate its key: hide what the new values hide, write the fields, show what they
+ * show (fail closed). key_slots = all slots of the node's key (may be NULL / 0 if key_id 0).
+ * Returns the number of supersession bits changed, or -1 on a bad slot.
+ */
+long hg_node_set_trust(HologlyphArena *arena, size_t slot, uint16_t trust_q16, uint32_t anis_flags,
+                       float anis_score, const uint32_t *key_slots, size_t n_key);
+
+/* ------------------------------------------- access log + reconsolidation */
+
+typedef struct { uint64_t glyph_id; uint32_t slot; uint32_t ts; } HologlyphAccess;   /* 16 B */
+
+/*
+ * Single-producer / single-consumer ring of accesses, one per search thread, in memory of
+ * the caller (never next to headers). Producer: the thread's hg_access_record (after its
+ * searches; the search itself writes nothing). Consumer: the writer's hg_consolidate.
+ * head and tail sit on separate cache lines. A full ring drops new entries (counted).
+ */
+typedef struct __attribute__((aligned(64))) {
+    uint64_t head;                 /* producer: next write position (release store) */
+    uint64_t dropped;              /* producer: entries lost to a full ring */
+    uint8_t  pad0[48];
+    uint64_t tail;                 /* consumer: next read position (release store) */
+    uint8_t  pad1[56];
+    HologlyphAccess *entries;      /* [cap], set once by hg_access_log_init */
+    uint32_t cap;                  /* power of two */
+    uint8_t  pad2[52];
+} HologlyphAccessLog;
+
+/* cap must be a power of two >= 2; returns 0, or -1. */
+int hg_access_log_init(HologlyphAccessLog *log, HologlyphAccess *entries, uint32_t cap);
+
+/* Append (glyph_id, slot, ts) of m[0..n) to the ring. Returns the number appended. */
+size_t hg_access_record(HologlyphAccessLog *log, const HologlyphMatch *m, size_t n, uint32_t ts);
+
+typedef struct {
+    float alpha;       /* strengthening: lambda_eff = lambda0 / (1 + alpha * access_count) */
+    float kappa_min;   /* floor: lambda_eff >= kappa_min * lambda0 (decay never drops below this share) */
+    float min_trust;   /* a node with trust below this, anis_score above max_anis or any */
+    float max_anis;    /*   anis_flags is not strengthened by its accesses */
+} HologlyphConsolidateParams;
+
+typedef struct {
+    uint64_t read;           /* log entries consumed */
+    uint64_t stale;          /* slot out of range or glyph_id mismatch */
+    uint64_t duplicate;      /* same node again in this batch (counted once per batch) */
+    uint64_t skipped_anis;   /* accesses to ANIS / low-trust nodes: not strengthened */
+    uint64_t strengthened;   /* nodes whose access_count went up */
+} HologlyphConsolidateStats;
+
+/*
+ * Writer side, batch: drain every log, count each node at most once per batch, raise its
+ * access_count and lower its decay_lambda to max(kappa_min * lambda0, lambda0 / (1 + alpha * c)).
+ * lambda0 is saved from decay_lambda on first use; a node with decay_lambda 0 only counts.
+ * The result depends on the set of nodes in the batch, not on the order of logs or entries.
+ * seen: scratch bitmap uint64[(arena->n + 63) / 64], all zero on entry, all zero on return.
+ * stats may be NULL. Returns the number of nodes strengthened.
+ */
+size_t hg_consolidate(HologlyphArena *arena, HologlyphAccessLog *const *logs, size_t n_logs,
+                      const HologlyphConsolidateParams *params, uint64_t *seen,
+                      HologlyphConsolidateStats *stats);
 
 /* <a, b> over 128 floats; AVX2/FMA when available, portable C otherwise. */
 float hg_dot128_avx2(const float *restrict a, const float *restrict b);

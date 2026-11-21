@@ -31,9 +31,11 @@ def test_rule_rejects_generic_valueless_and_assistant():
 
 
 def test_key_ids_namespaced_and_nonzero():
-    a = fk.key_for("I lead a team of 4 engineers", "user-1")
-    b = fk.key_for("Now I lead 5 engineers", "user-1")
-    c = fk.key_for("I lead a team of 4 engineers", "user-2")
+    a = fk.key_for("I lead a team of 4 engineers", "user-1", use_rule=True)
+    b = fk.key_for("Now I lead 5 engineers", "user-1", use_rule=True)
+    c = fk.key_for("I lead a team of 4 engineers", "user-2", use_rule=True)
     assert a == b != 0 and a != c
-    assert fk.key_for("hello", "user-1") == 0
+    assert fk.key_for("hello", "user-1", use_rule=True) == 0
+    assert fk.key_for("I lead a team of 4 engineers", "user-1") == 0     # rule off by default (experimental)
+    assert fk.EXPERIMENTAL and fk.FROZEN_AT == "568a8d2"
     assert fk.key_for("anything", "user-1", explicit="crm.phone") == fk.key_id("user-1", "crm.phone") != 0

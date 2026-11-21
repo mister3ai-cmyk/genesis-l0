@@ -15,6 +15,26 @@
 #define HG_HAVE_AVX2 1
 #endif
 
+/* ------------------------------------- mutable header fields (concurrency model, hologlyph.h)
+   Reader side: acquire loads (plain MOVs on x86). HG_PLAIN_HEADER_LOADS is ONLY for the
+   TSan negative control in test_concurrency.c: it must make TSan report the race. */
+#ifdef HG_PLAIN_HEADER_LOADS
+#define LD_U8(p)  (*(p))
+#define LD_U16(p) (*(p))
+#define LD_U32(p) (*(p))
+static inline float ld_f32(const float *p) { return *p; }
+#else
+#define LD_U8(p)  __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#define LD_U16(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#define LD_U32(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
+static inline float ld_f32(const float *p) { float v; __atomic_load(p, &v, __ATOMIC_ACQUIRE); return v; }
+#endif
+static inline void st_f32(float *p, float v) { __atomic_store(p, &v, __ATOMIC_RELEASE); }
+
+_Static_assert(sizeof(HologlyphAccessLog) == 192 && offsetof(HologlyphAccessLog, tail) == 64 &&
+               offsetof(HologlyphAccessLog, entries) == 128, "HologlyphAccessLog: head / tail / ro on own lines");
+_Static_assert(sizeof(HologlyphMatch) == 24, "HologlyphMatch size unchanged by the slot field");
+
 /* ------------------------------------------------------------------ dots */
 
 static inline float dot128(const float *restrict a, const float *restrict b) {
@@ -155,6 +175,7 @@ static size_t heap_emit(TopK *h, const HologlyphArena *arena, float qn2, int b4,
         float r          = qn2 - s0;
         o->chordal_dist  = sqrtf(r > 0.0f ? r : 0.0f);
         o->dominant_face = h->dom[0];
+        o->slot          = h->slot[0];
         h->cnt--;
         if (h->cnt) {
             heap_swap(h, 0, h->cnt);
@@ -171,8 +192,9 @@ static inline int score_node(const HologlyphArena *arena, size_t i,
                              const float *restrict qt, const float *restrict q,
                              const HologlyphParams *p, int b4, float *score, uint8_t *dom) {
     const HologlyphHeader *h = &arena->headers[i];
-    if (h->anis_score > p->max_anis || (float)h->trust_q16 * (1.0f / 65535.0f) < p->min_trust) return 0;
-    if ((h->node_flags & HG_NODE_SUPERSEDED) && !(p->search_flags & HG_SEARCH_HISTORY)) return 3;
+    if (ld_f32(&h->anis_score) > p->max_anis || (LD_U32(&h->anis_flags) & HG_ANIS_QUARANTINE) ||
+        (float)LD_U16(&h->trust_q16) * (1.0f / 65535.0f) < p->min_trust) return 0;
+    if ((LD_U8(&h->node_flags) & HG_NODE_SUPERSEDED) && !(p->search_flags & HG_SEARCH_HISTORY)) return 3;
 
     const float *y = arena->faces_tensor + i * HG_NODE_FLOATS;
     if (p->a2_mode == HG_A2_FACE0) {
@@ -210,9 +232,12 @@ static inline int score_node(const HologlyphArena *arena, size_t i,
         }
         *score = s;
     }
-    if (p->decay_beta != 0.0f && h->decay_lambda != 0.0f) {          /* log w_time = -lambda * dt */
-        float dt = p->now_ts > h->created_ts ? (float)(p->now_ts - h->created_ts) : 0.0f;
-        *score -= p->decay_beta * h->decay_lambda * dt;
+    if (p->decay_beta != 0.0f) {                                       /* log w_time = -lambda * dt */
+        float lam = ld_f32(&h->decay_lambda);
+        if (lam != 0.0f) {
+            float dt = p->now_ts > h->created_ts ? (float)(p->now_ts - h->created_ts) : 0.0f;
+            *score -= p->decay_beta * lam * dt;
+        }
     }
     *dom = d;
     return 2;
@@ -467,6 +492,145 @@ int hg_update_faces(HologlyphArena *arena, size_t slot, const float faces[HG_FAC
         encode_node(arena, y, hg_face_mask(h), arena->srp_codes + slot * words);
     }
     return 0;
+}
+
+/* ---------------------------------------------------- writer: supersession */
+
+/* Would slot s be superseded within its key, with slot `ov` read as (ov_trust, ov_flags)? */
+static int should_supersede(const HologlyphArena *A, const uint32_t *ks, size_t nk, uint32_t s,
+                            size_t ov, uint16_t ov_trust, uint32_t ov_flags) {
+    const HologlyphHeader *hs = &A->headers[s];
+    uint16_t ts_trust = s == ov ? ov_trust : hs->trust_q16;
+    for (size_t j = 0; j < nk; j++) {
+        uint32_t o = ks[j];
+        if (o == s) continue;
+        const HologlyphHeader *ho = &A->headers[o];
+        if (ho->created_ts < hs->created_ts || (ho->created_ts == hs->created_ts && o < s)) continue;  /* not newer */
+        uint16_t t = o == ov ? ov_trust : ho->trust_q16;
+        uint32_t f = o == ov ? ov_flags : ho->anis_flags;
+        if (f == 0 && t >= ts_trust) return 1;
+    }
+    return 0;
+}
+
+/* pass 0: set bits that must be set (hide); pass 1: clear bits that must be cleared (show). */
+static size_t supersede_pass(HologlyphArena *A, const uint32_t *ks, size_t nk, int pass,
+                             size_t ov, uint16_t ov_trust, uint32_t ov_flags) {
+    size_t changed = 0;
+    for (size_t i = 0; i < nk; i++) {
+        uint32_t s = ks[i];
+        if (s >= A->capacity) continue;
+        int want = should_supersede(A, ks, nk, s, ov, ov_trust, ov_flags);
+        int has = (A->headers[s].node_flags & HG_NODE_SUPERSEDED) != 0;   /* writer reads its own writes */
+        if (pass == 0 && want && !has) {
+            __atomic_fetch_or(&A->headers[s].node_flags, (uint8_t)HG_NODE_SUPERSEDED, __ATOMIC_RELEASE);
+            changed++;
+        } else if (pass == 1 && !want && has) {
+            __atomic_fetch_and(&A->headers[s].node_flags, (uint8_t)~HG_NODE_SUPERSEDED, __ATOMIC_RELEASE);
+            changed++;
+        }
+    }
+    return changed;
+}
+
+size_t hg_supersede_key(HologlyphArena *arena, const uint32_t *key_slots, size_t n_key) {
+    if (!arena || !key_slots) return 0;
+    for (size_t i = 0; i < n_key; i++) if (key_slots[i] >= arena->capacity) return 0;
+    size_t ov = (size_t)-1;
+    return supersede_pass(arena, key_slots, n_key, 0, ov, 0, 0) + supersede_pass(arena, key_slots, n_key, 1, ov, 0, 0);
+}
+
+long hg_node_set_trust(HologlyphArena *arena, size_t slot, uint16_t trust_q16, uint32_t anis_flags,
+                       float anis_score, const uint32_t *key_slots, size_t n_key) {
+    if (!arena || slot >= arena->capacity || (n_key && !key_slots)) return -1;
+    for (size_t i = 0; i < n_key; i++) if (key_slots[i] >= arena->capacity) return -1;
+    HologlyphHeader *h = &arena->headers[slot];
+    size_t c = supersede_pass(arena, key_slots, n_key, 0, slot, trust_q16, anis_flags);   /* hide */
+    __atomic_store_n(&h->anis_flags, anis_flags, __ATOMIC_RELEASE);                       /* write */
+    st_f32(&h->anis_score, anis_score);
+    __atomic_store_n(&h->trust_q16, trust_q16, __ATOMIC_RELEASE);
+    c += supersede_pass(arena, key_slots, n_key, 1, (size_t)-1, 0, 0);                    /* show */
+    return (long)c;
+}
+
+/* ---------------------------------------------- access log + reconsolidation */
+
+int hg_access_log_init(HologlyphAccessLog *log, HologlyphAccess *entries, uint32_t cap) {
+    if (!log || !entries || cap < 2 || (cap & (cap - 1))) return -1;
+    memset(log, 0, sizeof(*log));
+    log->entries = entries;
+    log->cap = cap;
+    return 0;
+}
+
+size_t hg_access_record(HologlyphAccessLog *log, const HologlyphMatch *m, size_t n, uint32_t ts) {
+    if (!log || !m) return 0;
+    uint64_t head = log->head;                                        /* only this thread writes head */
+    uint64_t tail = __atomic_load_n(&log->tail, __ATOMIC_ACQUIRE);
+    size_t put = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (head - tail >= log->cap) {                                /* full: drop, never overwrite */
+            __atomic_store_n(&log->dropped, log->dropped + (n - i), __ATOMIC_RELAXED);
+            break;
+        }
+        HologlyphAccess *e = &log->entries[head & (log->cap - 1)];
+        e->glyph_id = m[i].glyph_id;
+        e->slot = m[i].slot;
+        e->ts = ts;
+        head++;
+        put++;
+    }
+    __atomic_store_n(&log->head, head, __ATOMIC_RELEASE);             /* publish the entries */
+    return put;
+}
+
+#define HG_CONSOLIDATE_MAX_LOGS 64
+
+size_t hg_consolidate(HologlyphArena *arena, HologlyphAccessLog *const *logs, size_t n_logs,
+                      const HologlyphConsolidateParams *p, uint64_t *seen,
+                      HologlyphConsolidateStats *stats) {
+    if (!arena || !logs || !p || !seen || n_logs > HG_CONSOLIDATE_MAX_LOGS) return 0;
+    uint64_t heads[HG_CONSOLIDATE_MAX_LOGS];
+    HologlyphConsolidateStats st = {0};
+    size_t n = arena->n;
+    float kmin = p->kappa_min > 0.0f ? (p->kappa_min < 1.0f ? p->kappa_min : 1.0f) : 0.0f;
+
+    for (size_t l = 0; l < n_logs; l++) {                             /* pass 1: count, at most once per batch */
+        HologlyphAccessLog *g = logs[l];
+        heads[l] = __atomic_load_n(&g->head, __ATOMIC_ACQUIRE);
+        for (uint64_t t = g->tail; t < heads[l]; t++) {
+            const HologlyphAccess *e = &g->entries[t & (g->cap - 1)];
+            st.read++;
+            if (e->slot >= n || arena->headers[e->slot].glyph_id != e->glyph_id) { st.stale++; continue; }
+            uint64_t bit = 1ULL << (e->slot & 63);
+            if (seen[e->slot >> 6] & bit) { st.duplicate++; continue; }
+            seen[e->slot >> 6] |= bit;
+            HologlyphHeader *h = &arena->headers[e->slot];
+            if (h->anis_flags || h->anis_score > p->max_anis ||
+                (float)h->trust_q16 * (1.0f / 65535.0f) < p->min_trust) { st.skipped_anis++; continue; }
+            if (h->access_count != UINT32_MAX) h->access_count++;
+            if (h->lambda0 == 0.0f) h->lambda0 = h->decay_lambda;      /* base rate, saved once */
+            if (h->lambda0 != 0.0f) {
+                float lam = h->lambda0 / (1.0f + p->alpha * (float)h->access_count);
+                float lo = kmin * h->lambda0;
+                st_f32(&h->decay_lambda, lam > lo ? lam : lo);
+            }
+            st.strengthened++;
+        }
+    }
+    for (size_t l = 0; l < n_logs; l++) {                             /* pass 2: clear seen, then release */
+        HologlyphAccessLog *g = logs[l];                              /* entries stay ours until tail moves */
+        for (uint64_t t = g->tail; t < heads[l]; t++) {
+            uint32_t s = g->entries[t & (g->cap - 1)].slot;
+            if (s < n) seen[s >> 6] &= ~(1ULL << (s & 63));
+        }
+        __atomic_store_n(&g->tail, heads[l], __ATOMIC_RELEASE);
+    }
+    if (stats) {
+        stats->read += st.read; stats->stale += st.stale; stats->duplicate += st.duplicate;
+        stats->skipped_anis += st.skipped_anis; stats->strengthened += st.strengthened;
+    }
+    return (size_t)st.strengthened;
 }
 
 void hg_query_code(const HologlyphArena *arena, const float *qt, uint64_t *code) {

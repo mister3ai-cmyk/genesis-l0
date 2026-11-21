@@ -1,6 +1,6 @@
 """
 hologlyph_bridge.py - ctypes/numpy bridge to libhologlyph.so (hologlyph_l2).
-2026-11-21 · 1 class (HologlyphMemory), 4 public methods, 3 header helpers; default search = hash prefilter + Grassmann re-rank.
+2026-11-21 · 1 class (HologlyphMemory), 7 public methods, 4 header helpers (trust-aware supersede_flags); default search = hash prefilter + Grassmann re-rank.
 
 Memory is owned by Python (numpy, or np.memmap when `path` is given) and
 passed to C by pointer; the C side never allocates.
@@ -27,6 +27,7 @@ HG_A2_FACE0, HG_A2_OFF, HG_A2_INVARIANT = 0, 1, 2   # hg_a2_mode (hologlyph.h)
 HG_SCORE_AUTO, HG_SCORE_B5, HG_SCORE_B4 = 0, 1, 2   # hg_score_mode
 FACE_F0, FACE_F1, FACE_F2, FACE_F3, FACE_ALL = 0x1, 0x2, 0x4, 0x8, 0xF
 HG_NODE_SUPERSEDED, HG_SEARCH_HISTORY = 0x1, 0x1
+HG_ANIS_QUARANTINE = 0x80000000                       # anis_flags bit: A1 drops the node
 
 
 def planes_for(mode: int, bits: int) -> int:
@@ -44,10 +45,10 @@ _MAGIC = b"HGL2v2\0\0"                        # v2: 64 B header, trust_q16 / key
 HEADER_DTYPE = np.dtype({                     # = HologlyphHeader (hologlyph.h), 64 B
     "names":   ["glyph_id", "created_ts", "trust_q16", "proj_version", "anis_score", "anis_flags",
                 "decay_lambda", "source_id", "key_id", "face_mask", "node_flags", "reserved0", "content_hash",
-                "reserved1"],
+                "access_count", "lambda0"],
     "formats": ["<u8", "<u4", "<u2", "<u2", "<f4", "<u4", "<f4", "<u4", "<u4", "u1", "u1", ("u1", 2), ("u1", 16),
-                ("u1", 8)],
-    "offsets": [0, 8, 12, 14, 16, 20, 24, 28, 32, 36, 37, 38, 40, 56],
+                "<u4", "<f4"],
+    "offsets": [0, 8, 12, 14, 16, 20, 24, 28, 32, 36, 37, 38, 40, 56, 60],
     "itemsize": _HDR_BYTES,
 })
 assert HEADER_DTYPE.itemsize == 64
@@ -66,16 +67,27 @@ def neutral_headers(h, glyph_ids) -> None:
     h["face_mask"] = FACE_ALL
 
 
-def supersede_flags(key_id, created_ts) -> np.ndarray:
-    """Offline (bulk) form of the writer rule: within every key_id != 0 only the newest node
-    (max created_ts, ties -> highest slot) stays visible; returns bool[n] 'superseded'."""
+def supersede_flags(key_id, created_ts, trust_q16=None, anis_flags=None) -> np.ndarray:
+    """Offline (bulk) form of the writer rule (= hg_supersede_key): node i of key k != 0 is
+    superseded iff k has a node j newer by (created_ts, slot), clean (anis_flags == 0) and with
+    trust_q16_j >= trust_q16_i. trust / flags None = all equal and clean (newest node wins).
+    Returns bool[n] 'superseded'."""
     key_id, ts = np.asarray(key_id, np.int64), np.asarray(created_ts, np.int64)
-    out = np.zeros(len(key_id), bool)
+    n = len(key_id)
+    tr = np.zeros(n, np.int64) if trust_q16 is None else np.asarray(trust_q16, np.int64)
+    fl = np.zeros(n, np.int64) if anis_flags is None else np.asarray(anis_flags, np.int64)
+    out = np.zeros(n, bool)
     idx = np.flatnonzero(key_id != 0)
-    if idx.size:
-        order = idx[np.lexsort((idx, ts[idx], key_id[idx]))]       # by key, then ts, then slot
-        last = np.r_[key_id[order][1:] != key_id[order][:-1], True]
-        out[order[~last]] = True
+    if not idx.size:
+        return out
+    order = idx[np.lexsort((-idx, -ts[idx], key_id[idx]))]          # by key, then newest first
+    k = key_id[order]
+    grp = np.cumsum(np.r_[True, k[1:] != k[:-1]])                  # 1, 2, ... per key
+    v = np.where(fl[order] == 0, tr[order], -1) + grp * 100_000   # clean trust, offset per key
+    run = np.maximum.accumulate(v)                                 # never crosses into a later key
+    prev = np.r_[-1, run[:-1]]                                     # max over strictly newer nodes
+    first = np.r_[True, k[1:] != k[:-1]]
+    out[order] = ~first & (prev - grp * 100_000 >= tr[order])
     return out
 
 
@@ -102,7 +114,7 @@ class _Params(ctypes.Structure):
 
 class _Match(ctypes.Structure):
     _fields_ = [("glyph_id", ctypes.c_uint64), ("score", ctypes.c_float),
-                ("chordal_dist", ctypes.c_float), ("dominant_face", ctypes.c_uint8)]
+                ("chordal_dist", ctypes.c_float), ("dominant_face", ctypes.c_uint8), ("slot", ctypes.c_uint32)]
 
 
 class _Stats(ctypes.Structure):
@@ -136,6 +148,12 @@ def _load(lib_path: Optional[str]) -> ctypes.CDLL:
     lib.hg_scorer_is_b4.argtypes, lib.hg_scorer_is_b4.restype = [ctypes.POINTER(_Arena)], ctypes.c_int
     lib.hg_srp_encode.argtypes = [ctypes.POINTER(_Arena), ctypes.c_size_t, ctypes.c_size_t]
     lib.hg_srp_encode.restype = None
+    u32p = ctypes.POINTER(ctypes.c_uint32)
+    lib.hg_supersede_key.argtypes = [ctypes.POINTER(_Arena), u32p, ctypes.c_size_t]
+    lib.hg_supersede_key.restype = ctypes.c_size_t
+    lib.hg_node_set_trust.argtypes = [ctypes.POINTER(_Arena), ctypes.c_size_t, ctypes.c_uint16, ctypes.c_uint32,
+                                      ctypes.c_float, u32p, ctypes.c_size_t]
+    lib.hg_node_set_trust.restype = ctypes.c_long
     return lib
 
 
@@ -212,10 +230,12 @@ class HologlyphMemory:
         self._scratch = _aligned_empty(capacity)
         self._mask_counts = _aligned_empty(64).view(np.uint32)       # [16], arena-level homogeneity of face_mask
         self._mask_counts[:] = 0
-        self._latest: Dict[int, int] = {}                             # key_id -> visible slot (writer index)
+        self._key_slots: Dict[int, List[int]] = {}                     # key_id -> all its slots (writer index)
         if len(self):
             self._mask_counts[:] = np.bincount(face_mask_eff(self.headers["face_mask"][:len(self)]), minlength=16)
-            self._rebuild_latest()
+            k = self.headers["key_id"][:len(self)]
+            for slot in np.flatnonzero(k != 0):
+                self._key_slots.setdefault(int(k[slot]), []).append(int(slot))
         if srp_bits:
             self.lib.hg_srp_make_planes(_f32p(self._planes), n_planes, 7)
             if hash_mode == HG_HASH_SUBSPACE_ENERGY_UNIT:
@@ -223,21 +243,39 @@ class HologlyphMemory:
             if len(self):
                 self.lib.hg_srp_encode(ctypes.byref(self._arena()), 0, len(self))
 
-    def _rebuild_latest(self) -> None:
-        n = len(self)
-        k, ts = self.headers["key_id"][:n].astype(np.int64), self.headers["created_ts"][:n].astype(np.int64)
-        for slot in np.flatnonzero(k != 0):
-            cur = self._latest.get(int(k[slot]))
-            if cur is None or (ts[slot], slot) > (ts[cur], cur):
-                self._latest[int(k[slot])] = int(slot)
-
     def __len__(self) -> int:
         return int(self._meta[1])
 
-    def _arena(self) -> _Arena:
-        return _Arena(self.headers.ctypes.data, self.faces.ctypes.data, len(self), self.capacity,
+    def _arena(self, n: Optional[int] = None) -> _Arena:
+        return _Arena(self.headers.ctypes.data, self.faces.ctypes.data, len(self) if n is None else n, self.capacity,
                       self._planes.ctypes.data, self._codes.ctypes.data, self._scratch.ctypes.data,
                       self.srp_bits, self.hash_mode, self._mask_counts.ctypes.data, self.score_mode)
+
+    def _slots_of(self, key_id: int):
+        s = np.ascontiguousarray(self._key_slots.get(int(key_id), []), dtype=np.uint32)
+        return s, s.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32))
+
+    def visible_slots(self, key_id: int) -> List[int]:
+        """Slots of key_id not marked superseded (normally one)."""
+        return [s for s in self._key_slots.get(int(key_id), [])
+                if not self.headers["node_flags"][s] & HG_NODE_SUPERSEDED]
+
+    def set_trust(self, slot: int, trust: Optional[float] = None, anis_flags: Optional[int] = None,
+                  anis_score: Optional[float] = None) -> int:
+        """Writer: change a node's trust / ANIS fields (e.g. quarantine with anis_flags |=
+        HG_ANIS_QUARANTINE) and re-evaluate the supersession of its key, fail closed (C side:
+        hide, write, show). None keeps a field. Returns the number of supersession bits changed."""
+        if not 0 <= slot < len(self):
+            raise IndexError(slot)
+        h = self.headers[slot]
+        t = int(h["trust_q16"]) if trust is None else trust_q16(trust)
+        fl = int(h["anis_flags"]) if anis_flags is None else int(anis_flags)
+        sc = float(h["anis_score"]) if anis_score is None else float(anis_score)
+        arr, p = self._slots_of(int(h["key_id"])) if h["key_id"] else (np.zeros(0, np.uint32), None)
+        r = self.lib.hg_node_set_trust(ctypes.byref(self._arena()), slot, t, fl, sc, p, len(arr))
+        if r < 0:
+            raise ValueError("hg_node_set_trust failed")
+        return int(r)
 
     def inglyph(self, glyph_id: int, faces_4x128, trust: float = 1.0, anis: float = 0.0, *,
                 orthonormalize: bool = True, created_ts: Optional[int] = None, key_id: int = 0,
@@ -271,16 +309,11 @@ class HologlyphMemory:
         h["source_id"], h["key_id"], h["face_mask"], h["node_flags"], h["reserved0"] = source_id, key_id, face_mask, 0, 0
         digest = hashlib.sha256(faces.tobytes() if content is None else content).digest()
         h["content_hash"] = np.frombuffer(digest[:16], dtype=np.uint8)
-        h["reserved1"] = 0
-        if key_id:                                   # supersession: only the newest node of a key stays visible
-            cur = self._latest.get(int(key_id))
-            ts = int(h["created_ts"])
-            if cur is None or (ts, slot) > (int(self.headers[cur]["created_ts"]), cur):
-                if cur is not None:
-                    self.headers[cur]["node_flags"] |= HG_NODE_SUPERSEDED
-                self._latest[int(key_id)] = slot
-            else:                                    # an older fact arrived late
-                h["node_flags"] |= HG_NODE_SUPERSEDED
+        h["access_count"], h["lambda0"] = 0, 0.0
+        if key_id:                                   # trust-aware supersession (hg_supersede_key), before publish
+            self._key_slots.setdefault(int(key_id), []).append(slot)
+            arr, p = self._slots_of(key_id)
+            self.lib.hg_supersede_key(ctypes.byref(self._arena(slot + 1)), p, len(arr))
         arena = self._arena()
         self.lib.hg_mask_count_insert(ctypes.byref(arena), slot)
         if self.srp_bits:
