@@ -51,6 +51,7 @@ void hg_gen_random(HologlyphHeader *headers, float *faces, size_t n,
         h->created_ts = 1700000000u + (uint32_t)i;
         int toxic = urand() < 0.15;
         h->anis_score   = toxic ? 0.8f + 0.2f * urand() + 1e-4f : 0.2f * urand();
+        h->face_mask  = HG_FACE_MASK_ALL;
         h->trust_q16  = hg_trust_q16(toxic ? 0.3f + 0.7f * urand() : 0.6f + 0.4f * urand());
         for (int b = 0; b < 32; b++) {                  /* 32 draws keep the RNG stream unchanged */
             uint8_t v = (uint8_t)xorshift64s();
@@ -180,8 +181,8 @@ void hg_bench_prefilter(const HologlyphArena *arena, const float *QT, size_t nq,
     }
 }
 
-/* sizeof + field offsets of HologlyphHeader, for the Python dtype check (12 fields). */
-void hg_header_layout(uint32_t out[13]) {
+/* sizeof + field offsets of HologlyphHeader, for the Python dtype check (13 fields). */
+void hg_header_layout(uint32_t out[14]) {
     out[0]  = (uint32_t)sizeof(HologlyphHeader);
     out[1]  = (uint32_t)offsetof(HologlyphHeader, glyph_id);
     out[2]  = (uint32_t)offsetof(HologlyphHeader, created_ts);
@@ -192,7 +193,8 @@ void hg_header_layout(uint32_t out[13]) {
     out[7]  = (uint32_t)offsetof(HologlyphHeader, decay_lambda);
     out[8]  = (uint32_t)offsetof(HologlyphHeader, source_id);
     out[9]  = (uint32_t)offsetof(HologlyphHeader, key_id);
-    out[10] = (uint32_t)offsetof(HologlyphHeader, reserved0);
-    out[11] = (uint32_t)offsetof(HologlyphHeader, content_hash);
-    out[12] = (uint32_t)offsetof(HologlyphHeader, reserved1);
+    out[10] = (uint32_t)offsetof(HologlyphHeader, face_mask);
+    out[11] = (uint32_t)offsetof(HologlyphHeader, reserved0);
+    out[12] = (uint32_t)offsetof(HologlyphHeader, content_hash);
+    out[13] = (uint32_t)offsetof(HologlyphHeader, reserved1);
 }

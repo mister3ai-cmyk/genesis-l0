@@ -152,6 +152,7 @@ int main(void) {
         int toxic = urand() < TOXIC_FRAC;
         n_toxic += (size_t)toxic;
         h->anis_score   = toxic ? 0.8f + 0.2f * urand() + 1e-4f : 0.2f * urand();
+        h->face_mask  = HG_FACE_MASK_ALL;
         h->trust_q16  = hg_trust_q16(toxic ? 0.3f + 0.7f * urand() : 0.6f + 0.4f * urand());
         for (int b = 0; b < 32; b++) {                  /* 32 draws keep the RNG stream unchanged */
             uint8_t v = (uint8_t)xorshift64s();

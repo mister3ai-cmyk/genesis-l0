@@ -1,6 +1,6 @@
 /*
  * hologlyph.h — hologlyph_l2: Grassmann-manifold memory core over genesis-l0.
- * 2026-11-21 · public API: 15 functions, 5 structs, 2 enums (prefilter hash mode, gate A2 mode).
+ * 2026-11-21 · public API: 18 functions, 5 structs, 3 enums (prefilter hash, gate A2, scorer).
  *
  * A node is a 4-dim orthonormal subspace Y in R^128 (G(4, R^128)), stored as
  * 4 faces x 128 float32 (2048 B). R^128 = 8 octants x 16 dims:
@@ -42,10 +42,11 @@ extern "C" {
  *   24    4    decay_lambda   time decay rate, 1/s; 0 = no decay (neutral)
  *   28    4    source_id      ingest channel / source
  *   32    4    key_id         fact slot for supersession; 0 = none (neutral)
- *   36    4    reserved0
+ *   36    1    face_mask      bit f = face F_f present (F0 = 0x01); 0 reads as 0x0F (legacy)
+ *   37    3    reserved0
  *   40   16    content_hash   first 16 B of sha256 of the content
  *   56    8    reserved1
- * Neutral defaults: trust_q16 = 65535, anis 0, decay_lambda 0, key_id 0.
+ * Neutral defaults: trust_q16 = 65535, anis 0, decay_lambda 0, key_id 0, face_mask 0x0F.
  */
 typedef struct __attribute__((aligned(64))) {
     uint64_t glyph_id;
@@ -57,7 +58,8 @@ typedef struct __attribute__((aligned(64))) {
     float    decay_lambda;
     uint32_t source_id;
     uint32_t key_id;
-    uint32_t reserved0;
+    uint8_t  face_mask;
+    uint8_t  reserved0[3];
     uint8_t  content_hash[16];
     uint8_t  reserved1[8];
 } HologlyphHeader;
@@ -68,8 +70,15 @@ _Static_assert(offsetof(HologlyphHeader, created_ts) == 8 && offsetof(HologlyphH
                offsetof(HologlyphHeader, proj_version) == 14 && offsetof(HologlyphHeader, anis_score) == 16 &&
                offsetof(HologlyphHeader, anis_flags) == 20 && offsetof(HologlyphHeader, decay_lambda) == 24 &&
                offsetof(HologlyphHeader, source_id) == 28 && offsetof(HologlyphHeader, key_id) == 32 &&
-               offsetof(HologlyphHeader, content_hash) == 40 && offsetof(HologlyphHeader, reserved1) == 56,
+               offsetof(HologlyphHeader, face_mask) == 36 && offsetof(HologlyphHeader, content_hash) == 40 && offsetof(HologlyphHeader, reserved1) == 56,
                "HologlyphHeader layout");
+
+#define HG_FACE_MASK_ALL 0x0Fu
+/* Faces a node really has: absent faces are never scored and never hashed. */
+static inline unsigned hg_face_mask(const HologlyphHeader *h) {
+    unsigned m = h->face_mask & HG_FACE_MASK_ALL;
+    return m ? m : HG_FACE_MASK_ALL;
+}
 
 #define HG_TRUST_Q16_ONE 65535u
 /* trust in [0, 1] -> q16 (clamped, rounded). */
@@ -137,7 +146,20 @@ typedef struct {
     uint8_t         *srp_scratch;
     uint32_t         srp_bits;
     uint32_t         hash_mode;    /* hg_hash_mode; 0 = original folded */
+    uint32_t        *face_mask_counts; /* [16] nodes per hg_face_mask value, owned by the caller;
+                                          kept by hg_mask_count_insert / hg_update_faces; may be NULL */
+    uint32_t         score_mode;   /* hg_score_mode; 0 = AUTO */
 } HologlyphArena;
+
+/*
+ * Re-rank scorer (arena->score_mode), over the faces present in hg_face_mask:
+ * HG_SCORE_AUTO (0): B5 when every node has the same face mask (arena-level counts,
+ *   no node scan) or when face_mask_counts is NULL; B4 otherwise.
+ * HG_SCORE_B5 (1): S = sum_f <Q~, Y_f>^2 (sign-free, matches the folded hash).
+ * HG_SCORE_B4 (2): S = max_f <Q~, Y_f> (signed max-sim): a node with more faces gets
+ *   no extra mass, so enriched (F0+F1+F2) nodes do not crowd out F0-only nodes.
+ */
+typedef enum { HG_SCORE_AUTO = 0, HG_SCORE_B5 = 1, HG_SCORE_B4 = 2 } hg_score_mode;
 
 typedef struct {
     float min_trust;   /* gate A1: trust_q16 / 65535 < min_trust -> drop */
@@ -176,6 +198,20 @@ typedef struct {
  * previous ones; the faces are then left partially modified.
  */
 int hg_orthonormalize_faces(float faces[HG_FACES][HG_DIM]);
+
+/* Count slot `slot` (header already written, face_mask set) into arena->face_mask_counts. */
+void hg_mask_count_insert(HologlyphArena *arena, size_t slot);
+
+/*
+ * Late enrichment of an existing node (writer side, never concurrent with a search):
+ * copy faces[f] for every bit f of add_mask into the node, OR add_mask into its
+ * face_mask, move it in face_mask_counts and re-encode its prefilter code.
+ * Returns 0, or -1 on a bad slot / mask.
+ */
+int hg_update_faces(HologlyphArena *arena, size_t slot, const float faces[HG_FACES][HG_DIM], unsigned add_mask);
+
+/* 1 when the next search re-ranks with B4 (see hg_score_mode). */
+int hg_scorer_is_b4(const HologlyphArena *arena);
 
 /* <a, b> over 128 floats; AVX2/FMA when available, portable C otherwise. */
 float hg_dot128_avx2(const float *restrict a, const float *restrict b);

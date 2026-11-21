@@ -6,6 +6,7 @@
  */
 #include "hologlyph.h"
 
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
@@ -143,14 +144,15 @@ static inline void heap_push(TopK *h, float score, uint32_t slot, uint8_t dom) {
 }
 
 /* Pop everything (ascending), write best-first. */
-static size_t heap_emit(TopK *h, const HologlyphArena *arena, float qn2,
+static size_t heap_emit(TopK *h, const HologlyphArena *arena, float qn2, int b4,
                         HologlyphMatch *out) {
     size_t m = h->cnt;
     for (size_t i = m; i-- > 0;) {
         HologlyphMatch *o = &out[i];
         o->glyph_id      = arena->headers[h->slot[0]].glyph_id;
         o->score         = h->score[0];
-        float r          = qn2 - h->score[0];
+        float s0         = b4 ? (h->score[0] > 0.0f ? h->score[0] * h->score[0] : 0.0f) : h->score[0];
+        float r          = qn2 - s0;
         o->chordal_dist  = sqrtf(r > 0.0f ? r : 0.0f);
         o->dominant_face = h->dom[0];
         h->cnt--;
@@ -167,7 +169,7 @@ static size_t heap_emit(TopK *h, const HologlyphArena *arena, float qn2,
 /* 0 = dropped by A1, 1 = dropped by A2, 2 = scored. */
 static inline int score_node(const HologlyphArena *arena, size_t i,
                              const float *restrict qt, const float *restrict q,
-                             const HologlyphParams *p, float *score, uint8_t *dom) {
+                             const HologlyphParams *p, int b4, float *score, uint8_t *dom) {
     const HologlyphHeader *h = &arena->headers[i];
     if (h->anis_score > p->max_anis || (float)h->trust_q16 * (1.0f / 65535.0f) < p->min_trust) return 0;
 
@@ -187,19 +189,36 @@ static inline int score_node(const HologlyphArena *arena, size_t i,
         if (tau_trust - tau_anis < p->theta_gate) return 1;
     }
 
-    float p0 = dot128(qt, y);
-    float p1 = dot128(qt, y + HG_DIM);
-    float p2 = dot128(qt, y + 2 * HG_DIM);
-    float p3 = dot128(qt, y + 3 * HG_DIM);
-    *score = p0 * p0 + p1 * p1 + p2 * p2 + p3 * p3;
-
-    float a0 = fabsf(p0), a1 = fabsf(p1), a2 = fabsf(p2), a3 = fabsf(p3);
-    uint8_t d = 0; float best = a0;
-    if (a1 > best) { best = a1; d = 1; }
-    if (a2 > best) { best = a2; d = 2; }
-    if (a3 > best) { d = 3; }
+    unsigned fm = hg_face_mask(h);
+    uint8_t d = 0;
+    if (b4) {                                            /* signed max-sim over present faces */
+        float best = -FLT_MAX;                           /* not -INFINITY: built with -ffast-math */
+        for (int f = 0; f < HG_FACES; f++) {
+            if (!(fm >> f & 1u)) continue;
+            float pv = dot128(qt, y + f * HG_DIM);
+            if (pv > best) { best = pv; d = (uint8_t)f; }
+        }
+        *score = best;
+    } else {
+        float s = 0.0f, best = -1.0f;
+        for (int f = 0; f < HG_FACES; f++) {
+            float pv = (fm >> f & 1u) ? dot128(qt, y + f * HG_DIM) : 0.0f;
+            s += pv * pv;
+            float a = fabsf(pv);
+            if (a > best) { best = a; d = (uint8_t)f; }
+        }
+        *score = s;
+    }
     *dom = d;
     return 2;
+}
+
+int hg_scorer_is_b4(const HologlyphArena *a) {
+    if (a->score_mode == HG_SCORE_B4) return 1;
+    if (a->score_mode == HG_SCORE_B5 || !a->face_mask_counts) return 0;
+    int kinds = 0;
+    for (unsigned m = 1; m <= HG_FACE_MASK_ALL; m++) kinds += a->face_mask_counts[m] != 0;
+    return kinds > 1;
 }
 
 static inline size_t clamp_k(size_t k) { return k > HG_MAX_K ? HG_MAX_K : k; }
@@ -223,13 +242,14 @@ size_t hg_search_top_k_filtered(const HologlyphArena *arena, const float *q,
     TopK heap;
     heap.cnt = 0;
     heap.k = k;
+    int b4 = hg_scorer_is_b4(arena);
     uint64_t g_hdr = 0, g_oct = 0;
     size_t n = arena->n;
 
     for (size_t i = 0; i < n; i++) {
         if (allow && !((allow[i >> 6] >> (i & 63)) & 1ULL)) continue;
         float s; uint8_t d;
-        int r = score_node(arena, i, qt, q, params, &s, &d);
+        int r = score_node(arena, i, qt, q, params, b4, &s, &d);
         if (r == 0) { g_hdr++; continue; }
         if (r == 1) { g_oct++; continue; }
         heap_push(&heap, s, (uint32_t)i, d);
@@ -240,7 +260,7 @@ size_t hg_search_top_k_filtered(const HologlyphArena *arena, const float *q,
         stats->gated_header += g_hdr;
         stats->gated_octant += g_oct;
     }
-    return heap_emit(&heap, arena, qn2, out);
+    return heap_emit(&heap, arena, qn2, b4, out);
 }
 
 /* Gated top-k over candidate slots; qt/qn2 already computed. */
@@ -252,6 +272,7 @@ static size_t rerank_core(const HologlyphArena *arena, const float *q,
     heap.cnt = 0;
     heap.k = k;
     uint64_t scanned = 0, g_hdr = 0, g_oct = 0;
+    int b4 = hg_scorer_is_b4(arena);
 
     for (size_t c = 0; c < n_cand; c++) {
         uint32_t slot = cand_slots[c];
@@ -265,7 +286,7 @@ static size_t rerank_core(const HologlyphArena *arena, const float *q,
 
         scanned++;
         float s; uint8_t d;
-        int r = score_node(arena, slot, qt, q, params, &s, &d);
+        int r = score_node(arena, slot, qt, q, params, b4, &s, &d);
         if (r == 0) { g_hdr++; continue; }
         if (r == 1) { g_oct++; continue; }
         heap_push(&heap, s, slot, d);
@@ -276,7 +297,7 @@ static size_t rerank_core(const HologlyphArena *arena, const float *q,
         stats->gated_header += g_hdr;
         stats->gated_octant += g_oct;
     }
-    return heap_emit(&heap, arena, qn2, out);
+    return heap_emit(&heap, arena, qn2, b4, out);
 }
 
 size_t hg_rerank_candidates(const HologlyphArena *arena, const float *q,
@@ -366,12 +387,20 @@ static inline float node_energy(const float *planes, uint32_t m, const float *y)
     return e;
 }
 
-static void encode_node(const HologlyphArena *A, const float *y, uint64_t *code) {
+static void encode_node(const HologlyphArena *A, const float *y, unsigned fm, uint64_t *code) {
     uint32_t B = A->srp_bits, mode = A->hash_mode;
     if (mode == HG_HASH_FACEWISE_FOLDED) {
+        /* An absent face gets a copy of the first present face's code: the folded
+           min over faces then equals the min over present faces, with no change to
+           the scan loops and no false hits on the all-zero code of an empty face. */
         uint32_t words = B / 64;
-        for (int f = 0; f < HG_FACES; f++)
-            srp_encode_vec(A->srp_planes, B, y + (size_t)f * HG_DIM, code + (size_t)f * words);
+        int first = __builtin_ctz(fm);
+        srp_encode_vec(A->srp_planes, B, y + (size_t)first * HG_DIM, code + (size_t)first * words);
+        for (int f = 0; f < HG_FACES; f++) {
+            if (f == first) continue;
+            if (fm >> f & 1u) srp_encode_vec(A->srp_planes, B, y + (size_t)f * HG_DIM, code + (size_t)f * words);
+            else memcpy(code + (size_t)f * words, code + (size_t)first * words, words * sizeof(uint64_t));
+        }
         return;
     }
 #ifdef HG_DEBUG
@@ -402,7 +431,33 @@ void hg_srp_encode(HologlyphArena *arena, size_t from, size_t to) {
 #pragma omp parallel for schedule(static) if (to - from > 1024)
 #endif
     for (size_t i = from; i < to; i++)
-        encode_node(arena, arena->faces_tensor + i * HG_NODE_FLOATS, arena->srp_codes + i * words);
+        encode_node(arena, arena->faces_tensor + i * HG_NODE_FLOATS, hg_face_mask(&arena->headers[i]),
+                    arena->srp_codes + i * words);
+}
+
+void hg_mask_count_insert(HologlyphArena *arena, size_t slot) {
+    if (arena && arena->face_mask_counts && slot < arena->capacity)
+        arena->face_mask_counts[hg_face_mask(&arena->headers[slot])]++;
+}
+
+int hg_update_faces(HologlyphArena *arena, size_t slot, const float faces[HG_FACES][HG_DIM], unsigned add_mask) {
+    if (!arena || !faces || slot >= arena->n || (add_mask & ~HG_FACE_MASK_ALL) || !add_mask) return -1;
+    HologlyphHeader *h = &arena->headers[slot];
+    unsigned old = hg_face_mask(h);
+    unsigned now = (h->face_mask & HG_FACE_MASK_ALL) | add_mask;
+    float *y = arena->faces_tensor + slot * HG_NODE_FLOATS;
+    for (int f = 0; f < HG_FACES; f++)
+        if (add_mask >> f & 1u) memcpy(y + (size_t)f * HG_DIM, faces[f], HG_DIM * sizeof(float));
+    h->face_mask = (uint8_t)now;
+    if (arena->face_mask_counts) {
+        if (arena->face_mask_counts[old]) arena->face_mask_counts[old]--;
+        arena->face_mask_counts[hg_face_mask(h)]++;
+    }
+    if (srp_bits_ok(arena)) {
+        size_t words = HG_CODE_WORDS(arena->hash_mode, arena->srp_bits);
+        encode_node(arena, y, hg_face_mask(h), arena->srp_codes + slot * words);
+    }
+    return 0;
 }
 
 void hg_query_code(const HologlyphArena *arena, const float *qt, uint64_t *code) {

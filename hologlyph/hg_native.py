@@ -1,6 +1,6 @@
 """
 hg_native.py - ctypes binding of libhgbench.so (hologlyph.c + hg_benchlib.c) for
-test_hologlyph.py and bench_vs_hnsw.py. 2026-11-21 · 1 class (Arena), 4 helpers; 17 bound C functions.
+test_hologlyph.py and bench_vs_hnsw.py. 2026-11-21 · 1 class (Arena), 4 helpers; 20 bound C functions.
 
 One build serves the test and the benchmark:
     gcc -O3 -march=native -ffast-math -fopenmp -shared -fPIC hologlyph.c hg_benchlib.c \
@@ -11,7 +11,8 @@ import os
 
 import numpy as np
 
-from hologlyph_bridge import (HEADER_DTYPE, trust_q16, neutral_headers, HG_DIM, HG_FACES, HG_MAX_K, HG_OCTANTS, _Arena, _Match,
+from hologlyph_bridge import (HEADER_DTYPE, trust_q16, neutral_headers, face_mask_eff, FACE_ALL,
+                              HG_SCORE_AUTO, HG_SCORE_B5, HG_SCORE_B4, HG_DIM, HG_FACES, HG_MAX_K, HG_OCTANTS, _Arena, _Match,
                               _Params, _Stats, _aligned_empty, code_words, planes_for,
                               HG_HASH_FACEWISE_FOLDED, HG_HASH_SUBSPACE_ENERGY,
                               HG_HASH_SUBSPACE_ENERGY_UNIT, HG_HASH_SUBSPACE_CHI2,
@@ -34,6 +35,9 @@ def load(path=None):
     sig = {
         "hg_gen_random": ([_P, _P, _SZ, _P, _P, _P, _SZ], None),
         "hg_header_layout": ([_P], None),
+        "hg_mask_count_insert": ([A, _SZ], None),
+        "hg_update_faces": ([A, _SZ, _P, ctypes.c_uint], ctypes.c_int),
+        "hg_scorer_is_b4": ([A], ctypes.c_int),
         "hg_set_threads": ([ctypes.c_int], None),
         "hg_max_threads": ([], ctypes.c_int),
         "hg_bench_latency": ([A, _P, _P, _SZ, Pp, ctypes.c_int, _SZ, _SZ, _P, _SZ, _P, _P, _P], None),
@@ -82,8 +86,11 @@ def bitmap(mask_bool):
 class Arena:
     """Owns aligned headers/faces (or views of them), hash planes, codes and scratch."""
 
-    def __init__(self, lib, headers, faces, mode=HG_HASH_FACEWISE_FOLDED, bits=0, seed=7):
+    def __init__(self, lib, headers, faces, mode=HG_HASH_FACEWISE_FOLDED, bits=0, seed=7, score_mode=0):
         self.lib, self.headers, self.faces = lib, headers, faces
+        self.score_mode = score_mode
+        self.mask_counts = aligned((16,), np.uint32)
+        self.mask_counts[:] = np.bincount(face_mask_eff(headers["face_mask"]), minlength=16)
         self.n = self.capacity = faces.shape[0]
         self.mode, self.bits = mode, bits
         npl = planes_for(mode, bits) if bits else 1
@@ -103,7 +110,8 @@ class Arena:
     def struct(self):
         return _Arena(self.headers.ctypes.data, self.faces.ctypes.data, self.n, self.capacity,
                       self.planes.ctypes.data, None if self.codes is None else self.codes.ctypes.data,
-                      self.scratch.ctypes.data, self.bits, self.mode)
+                      self.scratch.ctypes.data, self.bits, self.mode, self.mask_counts.ctypes.data,
+                      self.score_mode)
 
     def code_bytes(self):
         return 0 if self.codes is None else self.codes.nbytes

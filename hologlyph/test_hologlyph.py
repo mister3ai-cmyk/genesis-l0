@@ -1,6 +1,6 @@
 """
 test_hologlyph.py - hologlyph_l2 hash invariance, prefilter select and exact metric.
-2026-11-21 · 11 tests; run in WSL against the same libhgbench.so as the benchmark:
+2026-11-21 · 15 tests; run in WSL against the same libhgbench.so as the benchmark:
     HG_BENCH_LIB=./libhgbench.so python -m pytest -q -s test_hologlyph.py
 """
 import ctypes
@@ -260,7 +260,7 @@ def test_a2_invariant_gate_is_o4_invariant():
 
 
 def test_header_is_64_bytes_and_matches_python_dtype():
-    lay = np.zeros(13, np.uint32)
+    lay = np.zeros(14, np.uint32)
     LIB.hg_header_layout(hn.ptr(lay))
     assert lay[0] == 64 == hn.HEADER_DTYPE.itemsize
     assert lay[1:].tolist() == [hn.HEADER_DTYPE.fields[f][1] for f in hn.HEADER_DTYPE.names]
@@ -309,3 +309,139 @@ def test_bridge_raw_faces_roundtrip(tmp_path):
     h = m2.headers[17]
     assert len(m2) == 50 and h["key_id"] == 3 and h["created_ts"] == 1_700_000_017 and h["proj_version"] == 1
     assert h["trust_q16"] == hb.trust_q16(0.9) and bytes(h["content_hash"]) == hashlib.sha256(b"t17").digest()[:16]
+
+
+def _unit(rng, n=128):
+    v = rng.standard_normal(n)
+    return v / np.linalg.norm(v)
+
+
+def _top_ids(ar, q, k=10, fast=False, pool=256):
+    w = np.ones(8, np.float32)
+    prm = hn._Params(-1e30, 1e30, -1e30, hn.HG_A2_OFF)
+    m, st = (hn._Match * k)(), hn._Stats()
+    if fast:
+        r = LIB.hg_search_fast_filtered(ctypes.byref(ar.struct()), hn.ptr(q), hn.ptr(w), ctypes.byref(prm), None,
+                                        pool, k, m, ctypes.byref(st))
+    else:
+        r = LIB.hg_search_top_k_filtered(ctypes.byref(ar.struct()), hn.ptr(q), hn.ptr(w), ctypes.byref(prm), None,
+                                         k, m, ctypes.byref(st))
+    return [m[i].glyph_id for i in range(r)], [m[i].score for i in range(r)]
+
+
+def test_face_mask_absent_faces_give_no_false_hits():
+    """Node 0 has only F0 (mask 0x01) and garbage = the query itself in rows 1..3: neither the
+    folded prefilter nor the re-rank may see the garbage. Control: the same node with 0x0F is top-1."""
+    rng = np.random.default_rng(31)
+    n = 3000
+    Y = random_subspaces(rng, n)
+    q = hn.aligned((128,), np.float32)
+    q[:] = _unit(rng)
+    Y[0, 0] = _unit(rng)
+    Y[0, 1:] = q
+    hdr = clean_headers(n)
+    hdr["face_mask"] = hn.FACE_ALL
+    hdr["face_mask"][0] = 0x01
+    ar = hn.Arena(LIB, hdr, as_faces(Y), F, 256)
+    codes = ar.codes.reshape(n, 4, 4)
+    assert (codes[0, 1:] == codes[0, 0]).all()                    # absent faces carry F0's code
+    ids_full, sc = _top_ids(ar, q)
+    ids_fast, _ = _top_ids(ar, q, fast=True)
+    assert 1_000_000 not in ids_full and 1_000_000 not in ids_fast
+    s0 = float(LIB.hg_score_exact(hn.ptr(q), hn.ptr(as_faces(np.stack([Y[0, 0], 0 * q, 0 * q, 0 * q])[None])[0]),
+                                  hn.ptr(np.ones(8, np.float32))))
+    assert s0 < sc[-1]                                            # its true F0-only score is low
+    hdr["face_mask"][0] = hn.FACE_ALL
+    ar2 = hn.Arena(LIB, hdr, as_faces(Y), F, 256)
+    assert _top_ids(ar2, q)[0][0] == 1_000_000 and _top_ids(ar2, q, fast=True)[0][0] == 1_000_000
+
+
+def test_scorer_auto_switches_on_arena_mask_counts():
+    rng = np.random.default_rng(32)
+    n = 200
+    Fc = rng.standard_normal((n, 4, 128))
+    Fc /= np.linalg.norm(Fc, axis=-1, keepdims=True)
+    hdr = clean_headers(n)
+    hdr["face_mask"] = 0x07
+    Fc[:, 3] = 0
+    q = hn.aligned((128,), np.float32)
+    q[:] = _unit(rng)
+    ar = hn.Arena(LIB, hdr, as_faces(Fc))
+    assert LIB.hg_scorer_is_b4(ctypes.byref(ar.struct())) == 0          # homogeneous -> B5
+    ids, sc = _top_ids(ar, q, k=5)
+    b5 = ((Fc[:, :3] @ q.astype(np.float64)) ** 2).sum(1)
+    assert ids == (1_000_000 + np.argsort(-b5)[:5]).tolist() and np.allclose(sc, np.sort(b5)[::-1][:5], atol=1e-5)
+    hdr["face_mask"][::2] = 0x01
+    ar = hn.Arena(LIB, hdr, as_faces(Fc))
+    assert ar.mask_counts[0x01] == 100 and ar.mask_counts[0x07] == 100
+    assert LIB.hg_scorer_is_b4(ctypes.byref(ar.struct())) == 1          # mixed -> B4
+    ids, sc = _top_ids(ar, q, k=5)
+    dots = Fc @ q.astype(np.float64)
+    dots[::2, 1:] = -np.inf
+    b4 = dots.max(1)
+    assert ids == (1_000_000 + np.argsort(-b4)[:5]).tolist() and np.allclose(sc, np.sort(b4)[::-1][:5], atol=1e-5)
+    ar.score_mode = hn.HG_SCORE_B5                                         # explicit flag wins
+    assert LIB.hg_scorer_is_b4(ctypes.byref(ar.struct())) == 0
+
+
+def test_update_faces_late_enrichment():
+    """F0 written first (0x01); hg_update_faces adds F1, F2 later: mask 0x07, counts moved,
+    prefilter code = fresh encode of the enriched node, scorer back to B5 once all are enriched."""
+    rng = np.random.default_rng(33)
+    n = 64
+    Fc = rng.standard_normal((n, 4, 128)).astype(np.float32)
+    Fc /= np.linalg.norm(Fc, axis=-1, keepdims=True)
+    hdr = clean_headers(n)
+    hdr["face_mask"] = 0x07
+    hdr["face_mask"][5] = 0x01
+    faces = as_faces(Fc)
+    faces[5, 1:] = 0
+    ar = hn.Arena(LIB, hdr, faces, F, 256)
+    assert LIB.hg_scorer_is_b4(ctypes.byref(ar.struct())) == 1
+    new = hn.aligned((4, 128), np.float32)
+    new[:] = Fc[5]
+    assert LIB.hg_update_faces(ctypes.byref(ar.struct()), 5, hn.ptr(new), 0x06) == 0
+    assert hdr["face_mask"][5] == 0x07 and ar.mask_counts[0x01] == 0 and ar.mask_counts[0x07] == n
+    assert np.array_equal(faces[5, :3], Fc[5, :3]) and not faces[5, 3].any()   # F3 not in add_mask
+    fresh = hn.Arena(LIB, hdr, faces, F, 256)
+    assert np.array_equal(ar.codes.reshape(n, 16)[5], fresh.codes.reshape(n, 16)[5])
+    assert LIB.hg_scorer_is_b4(ctypes.byref(ar.struct())) == 0
+    assert LIB.hg_update_faces(ctypes.byref(ar.struct()), n, hn.ptr(new), 0x02) == -1
+    assert LIB.hg_update_faces(ctypes.byref(ar.struct()), 5, hn.ptr(new), 0x10) == -1
+
+
+def test_hgl2_v1_file_rejected_and_migrated(tmp_path):
+    import hologlyph_bridge as hb
+    import migrate_hgl2_v1_to_v2 as mig
+    lib = os.environ.get("HOLOGLYPH_LIB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "libhologlyph.so")
+    if not os.path.exists(lib):
+        pytest.skip("libhologlyph.so not built")
+    cap, n = 8, 3
+    rng = np.random.default_rng(34)
+    Y = random_subspaces(rng, n).astype(np.float32)
+    old = np.zeros(cap, mig.V1_DTYPE)
+    old["glyph_id"][:n] = [11, 12, 13]
+    old["timestamp"][:n] = [1_700_000_000_123_456_789, 1_700_000_001_000_000_000, 1_700_000_002]
+    old["trust_scalar"][:n] = [1.0, 0.5, 0.25]
+    old["anis_score"][:n] = [0.0, 0.1, 0.9]
+    old["flags"][:n] = [0, 3, 0]
+    old["content_hash"][:n] = np.arange(32, dtype=np.uint8)
+    faces = np.zeros((cap, 4, 128), np.float32)
+    faces[:n] = Y
+    prefix = np.zeros(64, np.uint8)
+    prefix[:8] = np.frombuffer(b"HGL2v1\0\0", np.uint8)
+    prefix.view(np.uint64)[1:3] = [n, cap]
+    src, dst = str(tmp_path / "old.hgl"), str(tmp_path / "new.hgl")
+    open(src, "wb").write(prefix.tobytes() + old.tobytes() + faces.tobytes())
+    with pytest.raises(ValueError, match="HGL2v1.*migrate_hgl2_v1_to_v2"):
+        hb.HologlyphMemory(cap, path=src, lib_path=lib)
+    assert mig.migrate(src, dst) == n
+    m = hb.HologlyphMemory(cap, path=dst, lib_path=lib)
+    h = m.headers
+    assert len(m) == n and h["glyph_id"][:n].tolist() == [11, 12, 13]
+    assert h["created_ts"][:n].tolist() == [1_700_000_000, 1_700_000_001, 1_700_000_002]
+    assert h["trust_q16"][:n].tolist() == [65535, 32768, 16384] and h["anis_flags"][1] == 3
+    assert (h["face_mask"][:n] == 0x0F).all() and bytes(h["content_hash"][0]) == bytes(range(16))
+    assert np.array_equal(m.faces[:n], Y)
+    top = m.recall_for_llm(Y[1, 2], np.ones(8), top_k=1, min_trust=0.4, max_anis=0.5, exact=True)
+    assert top[0]["glyph_id"] == 12
