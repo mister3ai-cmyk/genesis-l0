@@ -17,9 +17,9 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, arch: x86_64 }
-          - { os: ubuntu-latest, arch: aarch64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
           - { os: macos-15-intel, arch: x86_64 }
-          - { os: macos-14, arch: arm64 }
+          - { os: macos-15, arch: arm64 }
     steps:
       - uses: actions/checkout@v7
         with:
@@ -28,12 +28,6 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-
-      - name: Set up QEMU
-        if: matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v4
-        with:
-          platforms: arm64
 
       # Native build per runner: setup.py picks -march/-mcpu from the host machine,
       # so cross-compiling (e.g. x86_64 on an arm64 Mac) would get the wrong flags.
