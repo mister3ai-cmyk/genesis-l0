@@ -7,12 +7,13 @@ name = "genesis-l0"
 version = "0.1.0"
 description = "In-process C99 L0 vector index (SRP-LSH + exact re-rank) with a SQLite mmap system of record for AI agent loops"
 readme = "README.md"
-authors = [{ name = "Maksym Babych / Synapse Core Infrastructure", email = "research@syn.ai" }]
-license = { text = "BUSL-1.1" }
+authors = [{ name = "Maksym Babych / Synapse Core Infrastructure" }]
+license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.20.0"]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: C",

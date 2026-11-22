@@ -139,7 +139,21 @@ GENESIS_L0_E2E_BUDGET_US=300 pytest -m benchmark
 The end-to-end benchmark (precision mode) asserts p50 < 450 µs by default;
 override `GENESIS_L0_E2E_BUDGET_US` for your hardware.
 
+## `hologlyph/`: research L2 memory (not part of the pip package)
+
+`hologlyph/` is a research memory layer on top of the index: multi-face nodes
+with a 64-byte header (trust, time, supersession), an ANIS poisoning stress test
+and an MCP adapter. `pip install` does not install it. Results, with the source
+of every number, are in `hologlyph/TECHNICAL_SUMMARY.md`; all LongMemEval figures
+there come from the dev split only and are preliminary.
+
 ## License
 
-Business Source License 1.1 (see `LICENSE`), changing to Apache 2.0 on
-2030-01-01. `csrc/srp_lsh.c` and `csrc/srp_lsh.h` are Apache 2.0 (see `NOTICE`).
+Apache License 2.0 (see `LICENSE` and `NOTICE`).
+
+## Hardware R&D Track
+
+A separate research track studies electro-optical (photonic) scoring for the
+same kind of similarity search. It is simulation-only: no hardware has been
+built or measured. It lives in a private repository; nothing in this
+repository depends on it, and no figure in this README comes from it.

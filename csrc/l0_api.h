@@ -7,7 +7,7 @@
  *
  * Thread safety: queries take a shared lock, writes an exclusive one.
  *
- * Licensed under the Business Source License 1.1 (see LICENSE).
+ * Licensed under the Apache License, Version 2.0 (see LICENSE).
  */
 #ifndef L0_API_H
 #define L0_API_H

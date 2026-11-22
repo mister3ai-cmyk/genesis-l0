@@ -1,8 +1,8 @@
 genesis-l0
 Copyright 2026 Maksym Babych / Synapse Core Infrastructure
 
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
 csrc/srp_lsh.c and csrc/srp_lsh.h are taken unchanged from genesis-live-core
-(https://github.com/mister3ai-cmyk/genesis-live-core, DOI 10.5281/zenodo.23246581)
-and are licensed under the Apache License, Version 2.0
-(http://www.apache.org/licenses/LICENSE-2.0). All other files are licensed
-under the Business Source License 1.1 (see LICENSE).
+(https://github.com/mister3ai-cmyk/genesis-live-core, DOI 10.5281/zenodo.23246581),
+also under the Apache License, Version 2.0.

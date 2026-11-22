@@ -3,7 +3,7 @@
  * Same cascade as genesis-live-core benchmarks/run_benchmark.c:
  * planes seed 7, optional mean-centering, Hamming pool -> exact re-rank.
  *
- * Licensed under the Business Source License 1.1 (see LICENSE).
+ * Licensed under the Apache License, Version 2.0 (see LICENSE).
  */
 #define _GNU_SOURCE
 #include "l0_api.h"
