@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "genesis-l0"
-version = "0.1.0"
+version = "0.2.0"
 description = "In-process C99 L0 vector index (SRP-LSH + exact re-rank) with a SQLite mmap system of record for AI agent loops"
 readme = "README.md"
 authors = [{ name = "Maksym Babych / Synapse Core Infrastructure" }]

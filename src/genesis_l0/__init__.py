@@ -7,5 +7,5 @@ from ._c_core import CCoreIndex, CMemoryLockWarning
 from .memory import GenesisL0Memory
 from .storage import SQLiteMmapStorage
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["GenesisL0Memory", "SQLiteMmapStorage", "CCoreIndex", "CMemoryLockWarning"]
